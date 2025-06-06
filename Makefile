@@ -5,7 +5,7 @@ run:
 	go run cmd/server/main.go
 
 dev:
-	find . | entr -r make run
+	find . | grep .go | entr -r make run
 
 test:
 	go test ./...

@@ -14,6 +14,9 @@ import (
 
 var DB *sql.DB
 
+// DefaultMaxDatabaseSizeMB is the default maximum database size in megabytes
+const DefaultMaxDatabaseSizeMB = 1000
+
 // MaxDatabaseSizeMB is the maximum allowed database size in megabytes
 var MaxDatabaseSizeMB int
 
@@ -23,22 +26,22 @@ func init() {
 	if maxDBSize != "" {
 		size, err := strconv.Atoi(maxDBSize)
 		if err != nil {
-			log.Printf("Invalid MAX_DB_SIZE value '%s', using default 100MB", maxDBSize)
-			MaxDatabaseSizeMB = 1000
+			log.Printf("Invalid MAX_DB_SIZE value '%s', using default %dMB", maxDBSize, DefaultMaxDatabaseSizeMB)
+			MaxDatabaseSizeMB = DefaultMaxDatabaseSizeMB
 		} else {
 			MaxDatabaseSizeMB = size
 			log.Printf("Database size limit set to %dMB from MAX_DB_SIZE env", MaxDatabaseSizeMB)
 		}
 	} else {
-		MaxDatabaseSizeMB = 1000
+		MaxDatabaseSizeMB = DefaultMaxDatabaseSizeMB
 	}
 }
 
 func InitDB() error {
-	// Create db directory if it doesn't exist
-	dbDir := "db"
+	// Create tmp directory if it doesn't exist
+	dbDir := "tmp"
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return fmt.Errorf("failed to create db directory: %w", err)
+		return fmt.Errorf("failed to create tmp directory: %w", err)
 	}
 
 	// Set database path
@@ -146,7 +149,7 @@ func CacheOriginalImage(url string, data []byte, contentType, responseFormat str
 
 // GetDatabaseSize returns the size of the database file in bytes
 func GetDatabaseSize() (int64, error) {
-	dbPath := filepath.Join("db", "image_cache.db")
+	dbPath := filepath.Join("tmp", "image_cache.db")
 	info, err := os.Stat(dbPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get database file info: %w", err)
