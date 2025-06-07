@@ -244,8 +244,19 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  // Track referer
+  // Check if domain is disabled
   referer := r.Header.Get("Referer")
+  domain := database.ExtractBaseDomain(referer)
+  
+  isDisabled, err := database.IsDomainDisabled(domain)
+  if err != nil {
+    log.Printf("Error checking domain status: %v", err)
+  } else if isDisabled {
+    http.Error(w, "Domain '"+domain+"' is forbidden from using this resize service", http.StatusForbidden)
+    return
+  }
+
+  // Track referer
   go func() {
     if err := database.TrackReferer(referer); err != nil {
       log.Printf("Failed to track referer: %v", err)

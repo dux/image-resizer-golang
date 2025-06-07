@@ -30,6 +30,7 @@ func main() {
 	mux.HandleFunc("/i", handlers.ImageInfoHandler)
 	mux.HandleFunc("/r", handlers.ResizeHandler)
 	mux.HandleFunc("/c", handlers.ConfigHandler)
+	mux.HandleFunc("/config/toggle-domain", handlers.ToggleDomainHandler)
 	mux.HandleFunc("/favicon.ico", handlers.FaviconHandler)
 
 	// Get port from environment variable or use default

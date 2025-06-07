@@ -4,6 +4,7 @@ import (
   "encoding/json"
   "fmt"
   "html/template"
+  "io"
   "net/http"
   "os"
   "path/filepath"
@@ -142,4 +143,74 @@ func getAverageImageSize(totalSize int64, imageCount int) string {
     return fmt.Sprintf("%.2f MB", avgSize/(1024*1024))
   }
   return fmt.Sprintf("%.2f KB", avgSize/1024)
+}
+
+type ToggleRequest struct {
+  Domain string `json:"domain"`
+}
+
+type ToggleResponse struct {
+  Success bool   `json:"success"`
+  Error   string `json:"error,omitempty"`
+}
+
+func ToggleDomainHandler(w http.ResponseWriter, r *http.Request) {
+  if r.Method != http.MethodPost {
+    http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+    return
+  }
+
+  body, err := io.ReadAll(r.Body)
+  if err != nil {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(ToggleResponse{
+      Success: false,
+      Error:   "Failed to read request body",
+    })
+    return
+  }
+
+  var req ToggleRequest
+  if err := json.Unmarshal(body, &req); err != nil {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(ToggleResponse{
+      Success: false,
+      Error:   "Invalid JSON",
+    })
+    return
+  }
+
+  if req.Domain == "" {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(ToggleResponse{
+      Success: false,
+      Error:   "Domain is required",
+    })
+    return
+  }
+
+  // Don't allow toggling special domains
+  if req.Domain == "direct" || req.Domain == "hidden" {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(ToggleResponse{
+      Success: false,
+      Error:   "Cannot toggle status for special domains",
+    })
+    return
+  }
+
+  err = database.ToggleDomainStatus(req.Domain)
+  if err != nil {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(ToggleResponse{
+      Success: false,
+      Error:   fmt.Sprintf("Failed to toggle domain status: %v", err),
+    })
+    return
+  }
+
+  w.Header().Set("Content-Type", "application/json")
+  json.NewEncoder(w).Encode(ToggleResponse{
+    Success: true,
+  })
 }

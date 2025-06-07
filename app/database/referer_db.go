@@ -46,6 +46,7 @@ func createRefererTables() error {
 		base_domain TEXT NOT NULL,
 		date_requested DATE NOT NULL,
 		request_count INTEGER DEFAULT 1,
+		is_disabled BOOLEAN DEFAULT FALSE,
 		UNIQUE(base_domain, date_requested)
 	);
 
@@ -177,12 +178,13 @@ type RefererStat struct {
 type DomainStat struct {
 	BaseDomain   string
 	TotalCount   int
+	IsDisabled   bool
 }
 
 // GetAggregatedRefererStats returns referer statistics grouped by domain
 func GetAggregatedRefererStats() ([]DomainStat, error) {
 	query := `
-		SELECT base_domain, SUM(request_count) as total_count
+		SELECT base_domain, SUM(request_count) as total_count, MAX(is_disabled) as is_disabled
 		FROM referer_tracking
 		GROUP BY base_domain
 		ORDER BY total_count DESC
@@ -197,7 +199,7 @@ func GetAggregatedRefererStats() ([]DomainStat, error) {
 	var stats []DomainStat
 	for rows.Next() {
 		var stat DomainStat
-		if err := rows.Scan(&stat.BaseDomain, &stat.TotalCount); err != nil {
+		if err := rows.Scan(&stat.BaseDomain, &stat.TotalCount, &stat.IsDisabled); err != nil {
 			return nil, fmt.Errorf("failed to scan domain stat: %w", err)
 		}
 		stats = append(stats, stat)
@@ -208,4 +210,37 @@ func GetAggregatedRefererStats() ([]DomainStat, error) {
 	}
 
 	return stats, nil
+}
+
+// IsDomainDisabled checks if a domain is disabled
+func IsDomainDisabled(domain string) (bool, error) {
+	query := `
+		SELECT COUNT(*) FROM referer_tracking 
+		WHERE base_domain = ? AND is_disabled = TRUE
+	`
+	
+	var count int
+	err := RefererDB.QueryRow(query, domain).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check domain status: %w", err)
+	}
+	
+	return count > 0, nil
+}
+
+// ToggleDomainStatus toggles the disabled status for a domain
+func ToggleDomainStatus(domain string) error {
+	// Update all records for this domain
+	query := `
+		UPDATE referer_tracking 
+		SET is_disabled = NOT is_disabled 
+		WHERE base_domain = ?
+	`
+	
+	_, err := RefererDB.Exec(query, domain)
+	if err != nil {
+		return fmt.Errorf("failed to toggle domain status: %w", err)
+	}
+	
+	return nil
 }
