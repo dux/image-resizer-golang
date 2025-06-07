@@ -1,78 +1,78 @@
 package handlers
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"os"
+  "encoding/json"
+  "fmt"
+  "net/http"
+  "os"
 
-	"image-resize/database"
+  "image-resize/database"
 )
 
 type ConfigInfo struct {
-	Port           string  `json:"port"`
-	MaxDBSizeMB    int     `json:"max_db_size_mb"`
-	WebPQuality    float32 `json:"webp_quality"`
-	DBSizeMB       float64 `json:"db_size_mb"`
-	DBSizeBytes    int64   `json:"db_size_bytes"`
-	ImageCount     int     `json:"image_count"`
-	DBSizeReadable string  `json:"db_size_readable"`
+  Port           string  `json:"port"`
+  MaxDBSizeMB    int     `json:"max_db_size_mb"`
+  WebPQuality    float32 `json:"webp_quality"`
+  DBSizeMB       float64 `json:"db_size_mb"`
+  DBSizeBytes    int64   `json:"db_size_bytes"`
+  ImageCount     int     `json:"image_count"`
+  DBSizeReadable string  `json:"db_size_readable"`
 }
 
 func ConfigHandler(w http.ResponseWriter, r *http.Request) {
-	// Get database size
-	dbSize, err := database.GetDatabaseSize()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get database size: %v", err), http.StatusInternalServerError)
-		return
-	}
+  // Get database size
+  dbSize, err := database.GetDatabaseSize()
+  if err != nil {
+    http.Error(w, fmt.Sprintf("Failed to get database size: %v", err), http.StatusInternalServerError)
+    return
+  }
 
-	// Get image count
-	var imageCount int
-	err = database.DB.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&imageCount)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to count images: %v", err), http.StatusInternalServerError)
-		return
-	}
+  // Get image count
+  var imageCount int
+  err = database.DB.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&imageCount)
+  if err != nil {
+    http.Error(w, fmt.Sprintf("Failed to count images: %v", err), http.StatusInternalServerError)
+    return
+  }
 
-	// Get port from environment
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+  // Get port from environment
+  port := os.Getenv("PORT")
+  if port == "" {
+    port = "8080"
+  }
 
-	// Convert database size to MB
-	dbSizeMB := float64(dbSize) / (1024 * 1024)
+  // Convert database size to MB
+  dbSizeMB := float64(dbSize) / (1024 * 1024)
 
-	// Create readable size string
-	var dbSizeReadable string
-	if dbSizeMB >= 1 {
-		dbSizeReadable = fmt.Sprintf("%.2f MB", dbSizeMB)
-	} else {
-		dbSizeKB := float64(dbSize) / 1024
-		dbSizeReadable = fmt.Sprintf("%.2f KB", dbSizeKB)
-	}
+  // Create readable size string
+  var dbSizeReadable string
+  if dbSizeMB >= 1 {
+    dbSizeReadable = fmt.Sprintf("%.2f MB", dbSizeMB)
+  } else {
+    dbSizeKB := float64(dbSize) / 1024
+    dbSizeReadable = fmt.Sprintf("%.2f KB", dbSizeKB)
+  }
 
-	config := ConfigInfo{
-		Port:           port,
-		MaxDBSizeMB:    database.MaxDatabaseSizeMB,
-		WebPQuality:    WebPQuality,
-		DBSizeMB:       dbSizeMB,
-		DBSizeBytes:    dbSize,
-		ImageCount:     imageCount,
-		DBSizeReadable: dbSizeReadable,
-	}
+  config := ConfigInfo{
+    Port:           port,
+    MaxDBSizeMB:    database.MaxDatabaseSizeMB,
+    WebPQuality:    WebPQuality,
+    DBSizeMB:       dbSizeMB,
+    DBSizeBytes:    dbSize,
+    ImageCount:     imageCount,
+    DBSizeReadable: dbSizeReadable,
+  }
 
-	// Check if client wants JSON
-	if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(config)
-		return
-	}
+  // Check if client wants JSON
+  if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(config)
+    return
+  }
 
-	// Return HTML response
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!DOCTYPE html>
+  // Return HTML response
+  w.Header().Set("Content-Type", "text/html; charset=utf-8")
+  fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
     <title>Image Resize Service - Configuration</title>
@@ -213,55 +213,55 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
     </div>
 </body>
 </html>`,
-		config.Port,
-		config.WebPQuality,
-		config.MaxDBSizeMB,
-		getSizeClass(dbSizeMB, float64(config.MaxDBSizeMB)),
-		config.DBSizeReadable,
-		config.ImageCount,
-		getAverageImageSize(dbSize, imageCount),
-		getProgressClass(dbSizeMB, float64(config.MaxDBSizeMB)),
-		getUsagePercent(dbSizeMB, float64(config.MaxDBSizeMB)),
-		getUsagePercent(dbSizeMB, float64(config.MaxDBSizeMB)),
-		config.MaxDBSizeMB,
-		config.Port,
-		config.MaxDBSizeMB,
-		config.WebPQuality,
-	)
+    config.Port,
+    config.WebPQuality,
+    config.MaxDBSizeMB,
+    getSizeClass(dbSizeMB, float64(config.MaxDBSizeMB)),
+    config.DBSizeReadable,
+    config.ImageCount,
+    getAverageImageSize(dbSize, imageCount),
+    getProgressClass(dbSizeMB, float64(config.MaxDBSizeMB)),
+    getUsagePercent(dbSizeMB, float64(config.MaxDBSizeMB)),
+    getUsagePercent(dbSizeMB, float64(config.MaxDBSizeMB)),
+    config.MaxDBSizeMB,
+    config.Port,
+    config.MaxDBSizeMB,
+    config.WebPQuality,
+  )
 }
 
 func getSizeClass(current, max float64) string {
-	percent := (current / max) * 100
-	if percent >= 90 {
-		return "warning"
-	}
-	return ""
+  percent := (current / max) * 100
+  if percent >= 90 {
+    return "warning"
+  }
+  return ""
 }
 
 func getProgressClass(current, max float64) string {
-	percent := (current / max) * 100
-	if percent >= 90 {
-		return "danger"
-	} else if percent >= 70 {
-		return "warning"
-	}
-	return ""
+  percent := (current / max) * 100
+  if percent >= 90 {
+    return "danger"
+  } else if percent >= 70 {
+    return "warning"
+  }
+  return ""
 }
 
 func getUsagePercent(current, max float64) float64 {
-	if max == 0 {
-		return 0
-	}
-	return (current / max) * 100
+  if max == 0 {
+    return 0
+  }
+  return (current / max) * 100
 }
 
 func getAverageImageSize(totalSize int64, imageCount int) string {
-	if imageCount == 0 {
-		return "N/A"
-	}
-	avgSize := float64(totalSize) / float64(imageCount)
-	if avgSize >= 1024*1024 {
-		return fmt.Sprintf("%.2f MB", avgSize/(1024*1024))
-	}
-	return fmt.Sprintf("%.2f KB", avgSize/1024)
+  if imageCount == 0 {
+    return "N/A"
+  }
+  avgSize := float64(totalSize) / float64(imageCount)
+  if avgSize >= 1024*1024 {
+    return fmt.Sprintf("%.2f MB", avgSize/(1024*1024))
+  }
+  return fmt.Sprintf("%.2f KB", avgSize/1024)
 }
