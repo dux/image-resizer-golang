@@ -13,6 +13,7 @@ import (
   "io"
   "log"
   "net/http"
+  "net/url"
   "os"
   "strconv"
   "strings"
@@ -72,12 +73,15 @@ type ResizeParams struct {
   CacheKey   string // For caching with new parameter format
 }
 
-// parseResizeParams parses w=100x100 or c=100x100 parameters
+// parseResizeParams parses w=100x100 or c=100x100 parameters (also accepts width/height/crop)
 func parseResizeParams(r *http.Request) (*ResizeParams, error) {
   params := &ResizeParams{}
   
-  // Check for crop parameter first
+  // Check for crop parameter first (both short and long forms)
   cropStr := r.URL.Query().Get("c")
+  if cropStr == "" {
+    cropStr = r.URL.Query().Get("crop")
+  }
   if cropStr != "" {
     params.CropMode = true
     
@@ -114,9 +118,15 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
     return params, nil
   }
   
-  // Check for width parameter
+  // Check for width parameter (both short and long forms)
   widthStr := r.URL.Query().Get("w")
+  if widthStr == "" {
+    widthStr = r.URL.Query().Get("width")
+  }
   heightStr := r.URL.Query().Get("h")
+  if heightStr == "" {
+    heightStr = r.URL.Query().Get("height")
+  }
   
   if widthStr != "" {
     // Check if it's in format 100x100
@@ -275,6 +285,22 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
     return
   }
 
+  // URL decode the src parameter (handles double-encoding)
+  decodedURL, err := url.QueryUnescape(srcURL)
+  if err != nil {
+    http.Error(w, fmt.Sprintf("Invalid src URL: %v", err), http.StatusBadRequest)
+    return
+  }
+  srcURL = decodedURL
+  
+  // Fix common URL malformations (missing slash after protocol)
+  if strings.HasPrefix(srcURL, "https:/") && !strings.HasPrefix(srcURL, "https://") {
+    srcURL = strings.Replace(srcURL, "https:/", "https://", 1)
+  }
+  if strings.HasPrefix(srcURL, "http:/") && !strings.HasPrefix(srcURL, "http://") {
+    srcURL = strings.Replace(srcURL, "http:/", "http://", 1)
+  }
+
   // Track referer
   referer := r.Header.Get("Referer")
   go func() {
@@ -305,19 +331,30 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
     cacheWidth = (hash & 0x7FFFFFFF) % 100000 + 100000 // Range: 100000-199999
   }
 
-  // Check cache first
-  cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheWidth)
-  if err != nil {
-    log.Printf("Error checking cache: %v", err)
+  // Check if client wants fresh content (force refresh)
+  skipCache := false
+  cacheControl := r.Header.Get("Cache-Control")
+  pragma := r.Header.Get("Pragma")
+  if strings.Contains(cacheControl, "no-cache") || strings.Contains(cacheControl, "no-store") || pragma == "no-cache" {
+    skipCache = true
+    log.Printf("Skipping cache due to client headers (Cache-Control: %s, Pragma: %s)", cacheControl, pragma)
   }
-  if cachedData != nil {
-    log.Printf("Serving cached image for %s (params: %s)", srcURL, params.CacheKey)
-    w.Header().Set("Content-Type", contentType)
-    w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
-    w.Header().Set("X-Cache", "HIT")
-    w.Header().Set("X-Info", fmt.Sprintf("from-cache; params=%s; format=%s", params.CacheKey, responseFormat))
-    w.Write(cachedData)
-    return
+
+  // Check cache first (unless client requested fresh content)
+  if !skipCache {
+    cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheWidth)
+    if err != nil {
+      log.Printf("Error checking cache: %v", err)
+    }
+    if cachedData != nil {
+      log.Printf("Serving cached image for %s (params: %s)", srcURL, params.CacheKey)
+      w.Header().Set("Content-Type", contentType)
+      w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
+      w.Header().Set("X-Cache", "HIT")
+      w.Header().Set("X-Info", fmt.Sprintf("from-cache; params=%s; format=%s", params.CacheKey, responseFormat))
+      w.Write(cachedData)
+      return
+    }
   }
 
   // Check if domain is disabled (only when downloading image)
@@ -342,9 +379,14 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  // Add headers to avoid rate wlimiting
-  req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-  req.Header.Set("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
+  // Add headers to avoid rate limiting
+  req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0")
+  req.Header.Set("Accept", "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+  req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+  req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+  req.Header.Set("DNT", "1")
+  req.Header.Set("Connection", "keep-alive")
+  req.Header.Set("Upgrade-Insecure-Requests", "1")
 
   resp, err := client.Do(req)
   if err != nil {
@@ -387,7 +429,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  contentType = resp.Header.Get("Content-Type")
+  contentType := resp.Header.Get("Content-Type")
 
   if strings.Contains(contentType, "svg") || strings.HasSuffix(strings.ToLower(srcURL), ".svg") {
     handleSVG(w, srcURL, bodyBytes, params.Width)
@@ -469,7 +511,11 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
   // Send response
   w.Header().Set("Content-Type", mimeType)
   w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
-  w.Header().Set("X-Cache", "MISS")
+  if skipCache {
+    w.Header().Set("X-Cache", "BYPASS")
+  } else {
+    w.Header().Set("X-Cache", "MISS")
+  }
   w.Header().Set("X-Info", fmt.Sprintf("fresh-fetch; params=%s; input=%s; output=%s", params.CacheKey, format, outputFormat))
   w.Write(outputData)
 }

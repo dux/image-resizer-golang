@@ -36,6 +36,8 @@ func main() {
 	mux.HandleFunc("/", handlers.HomeHandler)
 	mux.HandleFunc("/i", handlers.ImageInfoHandler)
 	mux.HandleFunc("/r", handlers.ResizeHandler)
+	mux.HandleFunc("/resize", handlers.ResizeHandler)
+	mux.HandleFunc("/demo", handlers.DemoHandler)
 	mux.HandleFunc("/c", handlers.ConfigHandler)
 	mux.HandleFunc("/config/toggle-domain", handlers.ToggleDomainHandler)
 	mux.HandleFunc("/favicon.ico", handlers.FaviconHandler)
