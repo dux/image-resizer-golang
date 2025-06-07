@@ -15,7 +15,7 @@ import (
 type ConfigInfo struct {
   Port             string                   `json:"port"`
   MaxDBSizeMB      int                      `json:"max_db_size_mb"`
-  WebPQuality      float32                  `json:"webp_quality"`
+  WebPQuality      int                      `json:"webp_quality"`
   DBSizeMB         float64                  `json:"db_size_mb"`
   DBSizeBytes      int64                    `json:"db_size_bytes"`
   ImageCount       int                      `json:"image_count"`

@@ -26,19 +26,19 @@ import (
 )
 
 // WebPQuality is the quality setting for WebP encoding
-var WebPQuality float32
+var WebPQuality int
 
 func init() {
   // Read QUALITY from environment or use default
   qualityStr := os.Getenv("QUALITY")
   if qualityStr != "" {
-    quality, err := strconv.ParseFloat(qualityStr, 32)
-    if err != nil || quality < 0 || quality > 100 {
-      log.Printf("Invalid QUALITY value '%s', using default 85", qualityStr)
+    quality, err := strconv.Atoi(qualityStr)
+    if err != nil || quality < 10 || quality > 100 {
+      log.Printf("Invalid QUALITY value '%s', must be 10-100, using default 85", qualityStr)
       WebPQuality = 85
     } else {
-      WebPQuality = float32(quality)
-      log.Printf("WebP quality set to %.0f from QUALITY env", WebPQuality)
+      WebPQuality = quality
+      log.Printf("WebP quality set to %d from QUALITY env", WebPQuality)
     }
   } else {
     WebPQuality = 85
@@ -46,11 +46,11 @@ func init() {
 }
 
 // Helper function to encode image as WebP
-func encodeWebP(img image.Image, quality float32) ([]byte, error) {
+func encodeWebP(img image.Image, quality int) ([]byte, error) {
   var buf bytes.Buffer
   err := webp.Encode(&buf, img, &webp.Options{
     Lossless: false,
-    Quality:  quality,
+    Quality:  float32(quality),
   })
   if err != nil {
     return nil, err
@@ -244,19 +244,8 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  // Check if domain is disabled
-  referer := r.Header.Get("Referer")
-  domain := database.ExtractBaseDomain(referer)
-  
-  isDisabled, err := database.IsDomainDisabled(domain)
-  if err != nil {
-    log.Printf("Error checking domain status: %v", err)
-  } else if isDisabled {
-    http.Error(w, "Domain '"+domain+"' is forbidden from using this resize service", http.StatusForbidden)
-    return
-  }
-
   // Track referer
+  referer := r.Header.Get("Referer")
   go func() {
     if err := database.TrackReferer(referer); err != nil {
       log.Printf("Failed to track referer: %v", err)
@@ -296,6 +285,16 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("X-Cache", "HIT")
     w.Header().Set("X-Info", fmt.Sprintf("from-cache; params=%s; format=%s", params.CacheKey, responseFormat))
     w.Write(cachedData)
+    return
+  }
+
+  // Check if domain is disabled (only when downloading image)
+  domain := database.ExtractBaseDomain(referer)
+  isDisabled, err := database.IsDomainDisabled(domain)
+  if err != nil {
+    log.Printf("Error checking domain status: %v", err)
+  } else if isDisabled {
+    http.Error(w, "Domain '"+domain+"' is forbidden from using this resize service", http.StatusForbidden)
     return
   }
 
@@ -406,7 +405,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
       case "jpeg", "jpg":
         mimeType = "image/jpeg"
         outputFormat = "jpeg"
-        jpeg.Encode(&buf, img, &jpeg.Options{Quality: int(WebPQuality)})
+        jpeg.Encode(&buf, img, &jpeg.Options{Quality: WebPQuality})
       case "png":
         mimeType = "image/png"
         outputFormat = "png"
@@ -414,7 +413,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
       default:
         mimeType = "image/jpeg"
         outputFormat = "jpeg"
-        jpeg.Encode(&buf, img, &jpeg.Options{Quality: int(WebPQuality)})
+        jpeg.Encode(&buf, img, &jpeg.Options{Quality: WebPQuality})
       }
       outputData = buf.Bytes()
     }
