@@ -116,6 +116,8 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
   
   // Check for width parameter
   widthStr := r.URL.Query().Get("w")
+  heightStr := r.URL.Query().Get("h")
+  
   if widthStr != "" {
     // Check if it's in format 100x100
     if strings.Contains(widthStr, "x") {
@@ -138,7 +140,7 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
       params.Height = height
       params.CacheKey = fmt.Sprintf("w_%dx%d", width, height)
     } else {
-      // Old format: just width
+      // Just width
       width, err := strconv.Atoi(widthStr)
       if err != nil || width <= 0 {
         return nil, fmt.Errorf("invalid width parameter")
@@ -146,6 +148,25 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
       params.Width = width
       params.Height = 0
       params.CacheKey = fmt.Sprintf("w_%d", width)
+    }
+  }
+  
+  // Check for height parameter
+  if heightStr != "" {
+    height, err := strconv.Atoi(heightStr)
+    if err != nil || height <= 0 {
+      return nil, fmt.Errorf("invalid height parameter")
+    }
+    
+    // If width was already set, combine them
+    if params.Width > 0 {
+      params.Height = height
+      params.CacheKey = fmt.Sprintf("w_%dx%d", params.Width, height)
+    } else {
+      // Height only
+      params.Width = 0
+      params.Height = height
+      params.CacheKey = fmt.Sprintf("h_%d", height)
     }
   }
   
@@ -227,13 +248,20 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
   }
   
   // Resize with max width/height constraint
-  if params.Height > 0 {
-    // Fit within both width and height
+  if params.Width > 0 && params.Height > 0 {
+    // Both width and height specified - fit within constraints
     return imaging.Fit(img, params.Width, params.Height, imaging.Lanczos)
   }
   
-  // Just width specified (old behavior)
-  return imaging.Resize(img, params.Width, 0, imaging.Lanczos)
+  if params.Width > 0 {
+    // Just width specified (old behavior)
+    return imaging.Resize(img, params.Width, 0, imaging.Lanczos)
+  }
+  
+  if params.Height > 0 {
+    // Just height specified - resize to fixed height
+    return imaging.Resize(img, 0, params.Height, imaging.Lanczos)
+  }
 }
 
 func ResizeHandler(w http.ResponseWriter, r *http.Request) {
