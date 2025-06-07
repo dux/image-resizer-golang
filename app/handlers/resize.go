@@ -262,6 +262,9 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
     // Just height specified - resize to fixed height
     return imaging.Resize(img, 0, params.Height, imaging.Lanczos)
   }
+  
+  // No resize parameters - return original image
+  return img
 }
 
 func ResizeHandler(w http.ResponseWriter, r *http.Request) {
