@@ -75,7 +75,7 @@ func ExtractBaseDomain(referer string) string {
 		if len(parts) > 2 {
 			return strings.TrimPrefix(parts[2], "www.")
 		}
-		return "unknown"
+		return "hidden"
 	}
 
 	// Get the host and remove www prefix if present
@@ -84,7 +84,7 @@ func ExtractBaseDomain(referer string) string {
 		host = u.Hostname()
 	}
 	if host == "" {
-		return "unknown"
+		return "hidden"
 	}
 
 	// Remove www. prefix
@@ -171,4 +171,41 @@ type RefererStat struct {
 	BaseDomain    string
 	DateRequested string
 	RequestCount  int
+}
+
+// DomainStat represents aggregated stats for a domain
+type DomainStat struct {
+	BaseDomain   string
+	TotalCount   int
+}
+
+// GetAggregatedRefererStats returns referer statistics grouped by domain
+func GetAggregatedRefererStats() ([]DomainStat, error) {
+	query := `
+		SELECT base_domain, SUM(request_count) as total_count
+		FROM referer_tracking
+		GROUP BY base_domain
+		ORDER BY total_count DESC
+	`
+
+	rows, err := RefererDB.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query aggregated referer stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats []DomainStat
+	for rows.Next() {
+		var stat DomainStat
+		if err := rows.Scan(&stat.BaseDomain, &stat.TotalCount); err != nil {
+			return nil, fmt.Errorf("failed to scan domain stat: %w", err)
+		}
+		stats = append(stats, stat)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating domain stats: %w", err)
+	}
+
+	return stats, nil
 }

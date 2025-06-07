@@ -1,0 +1,145 @@
+package handlers
+
+import (
+  "encoding/json"
+  "fmt"
+  "html/template"
+  "net/http"
+  "os"
+  "path/filepath"
+
+  "image-resize/app/database"
+)
+
+type ConfigInfo struct {
+  Port             string                   `json:"port"`
+  MaxDBSizeMB      int                      `json:"max_db_size_mb"`
+  WebPQuality      float32                  `json:"webp_quality"`
+  DBSizeMB         float64                  `json:"db_size_mb"`
+  DBSizeBytes      int64                    `json:"db_size_bytes"`
+  ImageCount       int                      `json:"image_count"`
+  DBSizeReadable   string                   `json:"db_size_readable"`
+  RefererStats     []database.DomainStat    `json:"referer_stats"`
+  // Additional fields for template
+  SizeClass        string                   `json:"-"`
+  ProgressClass    string                   `json:"-"`
+  UsagePercent     float64                  `json:"-"`
+  AverageImageSize string                   `json:"-"`
+}
+
+func ConfigHandler(w http.ResponseWriter, r *http.Request) {
+  // Get database size
+  dbSize, err := database.GetDatabaseSize()
+  if err != nil {
+    http.Error(w, fmt.Sprintf("Failed to get database size: %v", err), http.StatusInternalServerError)
+    return
+  }
+
+  // Get image count
+  var imageCount int
+  err = database.DB.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&imageCount)
+  if err != nil {
+    http.Error(w, fmt.Sprintf("Failed to count images: %v", err), http.StatusInternalServerError)
+    return
+  }
+
+  // Get port from environment
+  port := os.Getenv("PORT")
+  if port == "" {
+    port = "8080"
+  }
+
+  // Convert database size to MB
+  dbSizeMB := float64(dbSize) / (1024 * 1024)
+
+  // Create readable size string
+  var dbSizeReadable string
+  if dbSizeMB >= 1 {
+    dbSizeReadable = fmt.Sprintf("%.2f MB", dbSizeMB)
+  } else {
+    dbSizeKB := float64(dbSize) / 1024
+    dbSizeReadable = fmt.Sprintf("%.2f KB", dbSizeKB)
+  }
+
+  // Get referer statistics
+  refererStats, err := database.GetAggregatedRefererStats()
+  if err != nil {
+    // Log error but don't fail the whole page
+    fmt.Printf("Failed to get referer stats: %v\n", err)
+    refererStats = []database.DomainStat{}
+  }
+
+  usagePercent := getUsagePercent(dbSizeMB, float64(database.MaxDatabaseSizeMB))
+  
+  config := ConfigInfo{
+    Port:             port,
+    MaxDBSizeMB:      database.MaxDatabaseSizeMB,
+    WebPQuality:      WebPQuality,
+    DBSizeMB:         dbSizeMB,
+    DBSizeBytes:      dbSize,
+    ImageCount:       imageCount,
+    DBSizeReadable:   dbSizeReadable,
+    RefererStats:     refererStats,
+    SizeClass:        getSizeClass(dbSizeMB, float64(database.MaxDatabaseSizeMB)),
+    ProgressClass:    getProgressClass(dbSizeMB, float64(database.MaxDatabaseSizeMB)),
+    UsagePercent:     usagePercent,
+    AverageImageSize: getAverageImageSize(dbSize, imageCount),
+  }
+
+  // Check if client wants JSON
+  if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(config)
+    return
+  }
+
+  // Return HTML response using template
+  tmplPath := filepath.Join("templates", "config.html")
+  tmpl, err := template.ParseFiles(tmplPath)
+  if err != nil {
+    http.Error(w, fmt.Sprintf("Failed to load template: %v", err), http.StatusInternalServerError)
+    return
+  }
+
+  w.Header().Set("Content-Type", "text/html; charset=utf-8")
+  if err := tmpl.Execute(w, config); err != nil {
+    http.Error(w, fmt.Sprintf("Failed to render template: %v", err), http.StatusInternalServerError)
+    return
+  }
+}
+
+func getSizeClass(current, max float64) string {
+  percent := (current / max) * 100
+  if percent >= 90 {
+    return "warning"
+  }
+  return ""
+}
+
+func getProgressClass(current, max float64) string {
+  percent := (current / max) * 100
+  if percent >= 90 {
+    return "danger"
+  } else if percent >= 70 {
+    return "warning"
+  }
+  return ""
+}
+
+func getUsagePercent(current, max float64) float64 {
+  if max == 0 {
+    return 0
+  }
+  return (current / max) * 100
+}
+
+func getAverageImageSize(totalSize int64, imageCount int) string {
+  if imageCount == 0 {
+    return "N/A"
+  }
+  avgSize := float64(totalSize) / float64(imageCount)
+  if avgSize >= 1024*1024 {
+    return fmt.Sprintf("%.2f MB", avgSize/(1024*1024))
+  }
+  return fmt.Sprintf("%.2f KB", avgSize/1024)
+}

@@ -5,11 +5,11 @@ import (
   "fmt"
   "image"
   "image/gif"
-  _ "image/gif" // Register GIF format
   "image/jpeg"
-  _ "image/jpeg" // Register JPEG format
   "image/png"
-  _ "image/png" // Register PNG format
+  _ "image/gif" // Register GIF decoder
+  _ "image/jpeg" // Register JPEG decoder
+  _ "image/png" // Register PNG decoder
   "io"
   "log"
   "net/http"
@@ -18,11 +18,11 @@ import (
   "strings"
   "time"
 
-  "image-resize/database"
+  "image-resize/app/database"
 
   "github.com/chai2010/webp"
   "github.com/disintegration/imaging"
-  _ "golang.org/x/image/webp" // Register WebP format for decoding
+  _ "golang.org/x/image/webp" // Register WebP decoder
 )
 
 // WebPQuality is the quality setting for WebP encoding

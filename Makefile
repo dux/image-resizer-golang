@@ -1,17 +1,17 @@
 build:
-	go build -o bin/server cmd/server/main.go
+	go build -o bin/server app/main.go
 
 run:
-	go run cmd/server/main.go
+	go run app/main.go
 
 dev:
-	find . | grep .go | entr -r make run
+	find app | entr -r make run
 
 test:
 	go test ./...
 
 test-image:
-	@curl -s "http://localhost:8080/image/info?path=static/hobo.jpeg" | jq .
+	@curl -s "http://localhost:8080/i?path=static/hobo.jpeg" | jq .
 
 clean:
 	rm -rf bin/
