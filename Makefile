@@ -1,6 +1,10 @@
 build:
 	go build -o bin/server app/main.go
 
+passenger:
+	go build -o bin/image_resize app/main.go
+	go run lib/generate_nginx.go
+
 run:
 	go run app/main.go
 
@@ -19,4 +23,4 @@ test-image:
 clean:
 	rm -rf bin/
 
-.PHONY: build run test test-resize test-image clean
+.PHONY: build passenger run test test-resize test-image clean

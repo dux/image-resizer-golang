@@ -49,6 +49,7 @@ Thumbs.db
 db/
 tmp/
 temp/
+bin/
 *.tmp
 
 # Environment files
