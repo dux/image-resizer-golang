@@ -9,3 +9,5 @@ require (
 )
 
 require github.com/chai2010/webp v1.4.0
+
+require github.com/joho/godotenv v1.5.1 // indirect

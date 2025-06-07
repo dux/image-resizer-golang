@@ -1,12 +1,13 @@
 package handlers
 
 import (
+  "fmt"
   "net/http"
 )
 
 func FaviconHandler(w http.ResponseWriter, r *http.Request) {
-  // Set cache headers for 1 hour
-  w.Header().Set("Cache-Control", "public, max-age=3600")
+  // Set cache headers using MAX_AGE env var
+  w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
   w.Header().Set("Content-Type", "image/svg+xml")
   
   // Simple camera/image resize icon SVG

@@ -313,6 +313,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
   if cachedData != nil {
     log.Printf("Serving cached image for %s (params: %s)", srcURL, params.CacheKey)
     w.Header().Set("Content-Type", contentType)
+    w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
     w.Header().Set("X-Cache", "HIT")
     w.Header().Set("X-Info", fmt.Sprintf("from-cache; params=%s; format=%s", params.CacheKey, responseFormat))
     w.Write(cachedData)
@@ -467,6 +468,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 
   // Send response
   w.Header().Set("Content-Type", mimeType)
+  w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
   w.Header().Set("X-Cache", "MISS")
   w.Header().Set("X-Info", fmt.Sprintf("fresh-fetch; params=%s; input=%s; output=%s", params.CacheKey, format, outputFormat))
   w.Write(outputData)
@@ -482,6 +484,7 @@ func handleSVG(w http.ResponseWriter, srcURL string, svgData []byte, width int) 
 
   // Return SVG without manipulation
   w.Header().Set("Content-Type", "image/svg+xml")
+  w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
   w.Header().Set("X-Cache", "MISS")
   w.Header().Set("X-Info", fmt.Sprintf("fresh-fetch; format=svg; no-manipulation"))
   w.Write(svgData)

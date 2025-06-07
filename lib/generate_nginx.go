@@ -16,9 +16,20 @@ func main() {
     passenger_enabled on;
     passenger_app_type generic;
     passenger_startup_file bin/image_resize;
+    passenger_user www-data;
+    
+    # Directory permissions
+    location / {
+        try_files $uri $uri/ @app;
+    }
+    
+    location @app {
+        passenger_enabled on;
+    }
 
     # Static file serving
     location /static/ {
+        try_files $uri =404;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
@@ -44,7 +55,8 @@ func main() {
         application/xml+rss
         application/json
         image/svg+xml;
-}`, currentDir)
+}
+`, currentDir)
 
 	fmt.Print(config)
 }

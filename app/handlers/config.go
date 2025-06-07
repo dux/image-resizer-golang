@@ -8,9 +8,31 @@ import (
   "net/http"
   "os"
   "path/filepath"
+  "strconv"
+  "log"
 
   "image-resize/app/database"
 )
+
+// MaxAge is the cache max-age in seconds
+var MaxAge int
+
+func init() {
+  // Read MAX_AGE from environment or use default (1 day = 86400 seconds)
+  maxAgeStr := os.Getenv("MAX_AGE")
+  if maxAgeStr != "" {
+    age, err := strconv.Atoi(maxAgeStr)
+    if err != nil || age < 0 {
+      log.Printf("Invalid MAX_AGE value '%s', must be >= 0, using default 86400 (1 day)", maxAgeStr)
+      MaxAge = 86400
+    } else {
+      MaxAge = age
+      log.Printf("Cache max-age set to %d seconds from MAX_AGE env", MaxAge)
+    }
+  } else {
+    MaxAge = 86400 // 1 day default
+  }
+}
 
 type ConfigInfo struct {
   Port             string                   `json:"port"`
@@ -131,7 +153,9 @@ func getUsagePercent(current, max float64) float64 {
   if max == 0 {
     return 0
   }
-  return (current / max) * 100
+  percent := (current / max) * 100
+  // Round to single digit (nearest integer)
+  return float64(int(percent + 0.5))
 }
 
 func getAverageImageSize(totalSize int64, imageCount int) string {

@@ -144,7 +144,7 @@
                     <div class="progress-fill {{.ProgressClass}}" style="width: {{.UsagePercent}}%;"></div>
                 </div>
                 <div style="text-align: center; margin-top: 5px; color: #666;">
-                    {{.UsagePercent}}% of {{.MaxDBSizeMB}} MB limit
+                    {{printf "%.0f" .UsagePercent}}% of {{.MaxDBSizeMB}} MB limit
                 </div>
             </div>
         </div>
