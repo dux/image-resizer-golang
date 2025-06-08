@@ -1,78 +1,118 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GoLang Image Resizer by @dux</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://dux.github.io/fez/dist/fez.js"></script>
-    <style>
-        @keyframes float {
-            0%, 100% { transform: translateY(0) rotate(0deg); }
-            50% { transform: translateY(-50px) rotate(180deg); }
-        }
+{{template "layout.html" .}}
 
-        @keyframes floatReverse {
-            0%, 100% { transform: translateY(0) rotate(360deg); }
-            50% { transform: translateY(50px) rotate(180deg); }
-        }
+{{define "title"}}GoLang Image Resizer by @dux{{end}}
 
-        .animate-float {
-            animation: float 6s ease-in-out infinite;
-        }
+{{define "head"}}
+<style>
+    @keyframes float {
+        0%, 100% { transform: translateY(0) rotate(0deg); }
+        50% { transform: translateY(-50px) rotate(180deg); }
+    }
 
-        .animate-float-reverse {
-            animation: floatReverse 8s ease-in-out infinite;
-        }
+    @keyframes floatReverse {
+        0%, 100% { transform: translateY(0) rotate(360deg); }
+        50% { transform: translateY(50px) rotate(180deg); }
+    }
 
-        .animate-float-slow {
-            animation: float 9s ease-in-out infinite;
-        }
+    .animate-float {
+        animation: float 6s ease-in-out infinite;
+    }
 
-        .animate-float-reverse-slow {
-            animation: floatReverse 10s ease-in-out infinite;
+    .animate-float-reverse {
+        animation: floatReverse 8s ease-in-out infinite;
+    }
+
+    .animate-float-slow {
+        animation: float 9s ease-in-out infinite;
+    }
+
+    .animate-float-reverse-slow {
+        animation: floatReverse 10s ease-in-out infinite;
+    }
+
+    .hero-gradient {
+        background: linear-gradient(to bottom right, rgb(147, 51, 234), rgb(88, 28, 135));
+        min-height: calc(100vh - 64px);
+    }
+
+    @keyframes fade-in-down {
+        from {
+            opacity: 0;
+            transform: translateY(-30px);
         }
-    </style>
-    <script>
-        // Define navbar component
-        Fez('nav-bar', class {
-            connect() {
-                const currentPath = window.location.pathname;
-                
-                this.root.innerHTML = `
-                    <nav class="bg-gray-900/90 backdrop-blur-md shadow-lg fixed top-0 left-0 right-0 z-50">
-                        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                            <div class="flex items-center justify-between h-16">
-                                <div class="flex items-center">
-                                    <a href="/" class="flex items-center">
-                                        <span class="text-white text-xl font-bold">GoLang Image Resizer</span>
-                                    </a>
-                                </div>
-                                <div class="flex items-center space-x-4">
-                                    <a href="/" class="nav-link ${currentPath === '/' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
-                                        Home
-                                    </a>
-                                    <a href="/demo" class="nav-link ${currentPath === '/demo' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
-                                        Demo
-                                    </a>
-                                    <a href="/config" class="nav-link ${currentPath === '/config' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
-                                        Config
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                    </nav>
-                `;
-            }
-        });
-    </script>
-</head>
-<body class="bg-gradient-to-br from-purple-600 to-purple-900 min-h-screen overflow-hidden text-white">
-    <nav-bar></nav-bar>
-    
-    <!-- Main content wrapper with padding for navbar -->
-    <div class="min-h-screen flex items-center justify-center pt-16">
-        <!-- Floating SVG Shapes -->
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @keyframes fade-in-up {
+        from {
+            opacity: 0;
+            transform: translateY(30px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @keyframes fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+
+    .animate-fade-in-down {
+        animation: fade-in-down 1s ease-out;
+    }
+
+    .animate-fade-in-up {
+        animation: fade-in-up 1s ease-out;
+    }
+
+    .animate-fade-in {
+        animation: fade-in 1s ease-out;
+    }
+
+    .animation-delay-300 {
+        animation-delay: 0.3s;
+        animation-fill-mode: both;
+    }
+
+    .animation-delay-500 {
+        animation-delay: 0.5s;
+        animation-fill-mode: both;
+    }
+
+    .animation-delay-700 {
+        animation-delay: 0.7s;
+        animation-fill-mode: both;
+    }
+
+    .animation-delay-900 {
+        animation-delay: 0.9s;
+        animation-fill-mode: both;
+    }
+</style>
+<script>
+    // Define ui-card component for home page
+    Fez('ui-card', class {
+        connect(props) {
+            this.root.innerHTML = `
+                <div class="bg-white/10 backdrop-blur-md p-8 rounded-2xl border border-white/20 hover:-translate-y-2 transition-transform duration-300">
+                    ${props.icon}
+                    <h3 class="text-xl font-semibold mb-2">${props.title}</h3>
+                    <p class="text-gray-200">${props.description}</p>
+                </div>
+            `;
+        }
+    });
+</script>
+{{end}}
+
+{{define "content"}}
+<div class="hero-gradient flex items-center justify-center text-white relative overflow-hidden">
+    <!-- Floating SVG Shapes -->
     <div class="absolute inset-0 z-0">
         <svg class="absolute top-[10%] left-[10%] w-20 h-20 opacity-10 animate-float" viewBox="0 0 80 80">
             <rect x="10" y="10" width="60" height="60" fill="white" transform="rotate(45 40 40)"/>
@@ -103,26 +143,12 @@
             by @dux
         </p>
         <p class="text-lg text-gray-200 mb-12 animate-fade-in-up animation-delay-500">
-            <a href="https://twitter.com/dux">X</a>
+            <a href="https://twitter.com/dux" class="hover:text-white transition-colors">X</a>
             &sdot;
-            <a href="https://github.com/dux/image-resizer-golang">GitHub</a>
+            <a href="https://github.com/dux/image-resizer-golang" class="hover:text-white transition-colors">GitHub</a>
         </p>
 
         <!-- Features Grid -->
-        <script>
-            Fez('ui-card', class {
-                connect(props) {
-                    this.root.innerHTML = `
-                        <div class="bg-white/10 backdrop-blur-md p-8 rounded-2xl border border-white/20 hover:-translate-y-2 transition-transform duration-300">
-                            ${props.icon}
-                            <h3 class="text-xl font-semibold mb-2">${props.title}</h3>
-                            <p class="text-gray-200">${props.description}</p>
-                        </div>
-                    `;
-                }
-            });
-        </script>
-
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12 animate-fade-in animation-delay-700">
             <ui-card
                 title="Image Resizing"
@@ -152,68 +178,8 @@
             </ui-card>
         </div>
     </div>
+</div>
+{{end}}
 
-    <!-- Tailwind Animation Extensions -->
-    <style>
-        @keyframes fade-in-down {
-            from {
-                opacity: 0;
-                transform: translateY(-30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        @keyframes fade-in-up {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        @keyframes fade-in {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        .animate-fade-in-down {
-            animation: fade-in-down 1s ease-out;
-        }
-
-        .animate-fade-in-up {
-            animation: fade-in-up 1s ease-out;
-        }
-
-        .animate-fade-in {
-            animation: fade-in 1s ease-out;
-        }
-
-        .animation-delay-300 {
-            animation-delay: 0.3s;
-            animation-fill-mode: both;
-        }
-
-        .animation-delay-500 {
-            animation-delay: 0.5s;
-            animation-fill-mode: both;
-        }
-
-        .animation-delay-700 {
-            animation-delay: 0.7s;
-            animation-fill-mode: both;
-        }
-
-        .animation-delay-900 {
-            animation-delay: 0.9s;
-            animation-fill-mode: both;
-        }
-    </style>
-    </div> <!-- Close main content wrapper -->
-</body>
-</html>
+{{define "scripts"}}
+{{end}}

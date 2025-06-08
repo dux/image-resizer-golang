@@ -13,6 +13,9 @@ import (
 )
 
 func main() {
+	// Initialize log capturing before anything else
+	handlers.InitLogCapture()
+	
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found")
@@ -41,6 +44,8 @@ func main() {
 	mux.HandleFunc("/c", handlers.BasicAuth(handlers.ConfigHandler))
 	mux.HandleFunc("/config", handlers.BasicAuth(handlers.ConfigHandler))
 	mux.HandleFunc("/config/toggle-domain", handlers.BasicAuth(handlers.ToggleDomainHandler))
+	mux.HandleFunc("/logs", handlers.BasicAuth(handlers.LogsHandler))
+	mux.HandleFunc("/ws/logs", handlers.LogsWebSocketHandler)
 	mux.HandleFunc("/favicon.ico", handlers.FaviconHandler)
 
 	// Get port from environment variable or use default

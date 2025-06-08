@@ -21,8 +21,9 @@ import (
 
 	"image-resize/app/database"
 
-	"github.com/chai2010/webp"
 	"github.com/disintegration/imaging"
+	"github.com/kolesa-team/go-webp/encoder"
+	"github.com/kolesa-team/go-webp/webp"
 	_ "golang.org/x/image/webp" // Register WebP decoder
 )
 
@@ -65,13 +66,15 @@ func init() {
 	}
 }
 
-// Helper function to encode image as WebP
+// Helper function to encode image as WebP using Google's libwebp
 func encodeWebP(img image.Image, quality int) ([]byte, error) {
+	options, err := encoder.NewLossyEncoderOptions(encoder.PresetDefault, float32(quality))
+	if err != nil {
+		return nil, err
+	}
+	
 	var buf bytes.Buffer
-	err := webp.Encode(&buf, img, &webp.Options{
-		Lossless: false,
-		Quality:  float32(quality),
-	})
+	err = webp.Encode(&buf, img, options)
 	if err != nil {
 		return nil, err
 	}
@@ -83,28 +86,28 @@ func enforceMaxSize(img image.Image) image.Image {
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-	
+
 	// If both dimensions are within limits, return original
 	if width <= MaxSize && height <= MaxSize {
 		return img
 	}
-	
+
 	// Calculate scale factor to fit within MaxSize while preserving aspect ratio
 	scaleX := float64(MaxSize) / float64(width)
 	scaleY := float64(MaxSize) / float64(height)
-	
+
 	// Use the smaller scale to ensure both dimensions fit
 	scale := scaleX
 	if scaleY < scaleX {
 		scale = scaleY
 	}
-	
+
 	newWidth := int(float64(width) * scale)
 	newHeight := int(float64(height) * scale)
-	
-	log.Printf("Enforcing max size: original=%dx%d, max=%d, scale=%.3f, new=%dx%d", 
+
+	log.Printf("Enforcing max size: original=%dx%d, max=%d, scale=%.3f, new=%dx%d",
 		width, height, MaxSize, scale, newWidth, newHeight)
-	
+
 	return imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
 }
 
@@ -259,7 +262,7 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 	// Enforce max size limits on requested dimensions
 	targetWidth := params.Width
 	targetHeight := params.Height
-	
+
 	if targetWidth > MaxSize {
 		targetWidth = MaxSize
 		log.Printf("Requested width %d exceeds max size %d, clamped to %d", params.Width, MaxSize, targetWidth)
@@ -268,7 +271,7 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 		targetHeight = MaxSize
 		log.Printf("Requested height %d exceeds max size %d, clamped to %d", params.Height, MaxSize, targetHeight)
 	}
-	
+
 	if targetWidth == 0 && targetHeight == 0 {
 		return img // No resizing needed
 	}
@@ -525,7 +528,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Attempting WebP encoding for format: %s", format)
 		data, err := encodeWebP(img, WebPQuality)
 		if err == nil {
-			log.Printf("WebP encoding successful, output size: %.1f KB", float64(len(data))/1024.0)
+			log.Printf("WebP encoding successful with Google libwebp, output size: %.1f KB", float64(len(data))/1024.0)
 			outputData = data
 			mimeType = "image/webp"
 			outputFormat = "webp"

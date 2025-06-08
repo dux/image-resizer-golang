@@ -34,6 +34,9 @@
                                     <a href="/config" class="nav-link ${currentPath === '/config' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
                                         Config
                                     </a>
+                                    <a href="/logs" class="nav-link ${currentPath === '/logs' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                        Logs
+                                    </a>
                                 </div>
                             </div>
                         </div>
@@ -44,7 +47,7 @@
     </script>
     {{block "head" .}}{{end}}
 </head>
-<body class="bg-gray-100 min-h-screen">
+<body class="bg-gray-100 min-h-screen" id="page-body">
     <nav-bar></nav-bar>
     
     <main>
@@ -63,5 +66,12 @@
     </footer>
     
     {{block "scripts" .}}{{end}}
+    
+    <script>
+        // Remove gray background for home page
+        if (window.location.pathname === '/') {
+            document.getElementById('page-body').classList.remove('bg-gray-100');
+        }
+    </script>
 </body>
 </html>

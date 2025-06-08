@@ -17,7 +17,8 @@ import (
 	"image-resize/app/database"
 	"image-resize/app/handlers"
 
-	"github.com/chai2010/webp"
+	"github.com/kolesa-team/go-webp/encoder"
+	"github.com/kolesa-team/go-webp/webp"
 	_ "golang.org/x/image/webp"
 )
 
@@ -373,10 +374,8 @@ func createTestGIF(width, height int) []byte {
 func createTestWebP(width, height int) []byte {
 	img := createColoredImage(width, height)
 	var buf bytes.Buffer
-	webp.Encode(&buf, img, &webp.Options{
-		Lossless: false,
-		Quality:  90,
-	})
+	options, _ := encoder.NewLossyEncoderOptions(encoder.PresetDefault, 90)
+	webp.Encode(&buf, img, options)
 	return buf.Bytes()
 }
 
