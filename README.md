@@ -2,17 +2,17 @@
 
 A fast, efficient image resizing service built in Go with WebP support, intelligent caching, and domain management.
 
-> Video coded while watching podcast by [@dux](https://twitter.com/dux)
+> Vibe coded while watching podcasts and Twitch&copy; by [@dux](https://twitter.com/dux)
 
 ## Features
 
-✅ **WebP Support** - Automatic WebP encoding for modern browsers  
-✅ **Multiple Resize Modes** - Width, height, fit, and crop options  
-✅ **SVG Passthrough** - SVG files served without modification  
-✅ **SQLite Caching** - Fast database cache with auto-cleanup  
-✅ **Domain Management** - Block/allow specific domains  
-✅ **Statistics Dashboard** - Monitor usage and performance  
-✅ **Environment Configuration** - Easy deployment setup  
+✅ **WebP Support** - Automatic WebP encoding for modern browsers
+✅ **Multiple Resize Modes** - Width, height, fit, and crop options
+✅ **SVG Passthrough** - SVG files served without modification
+✅ **SQLite Caching** - Fast database cache with auto-cleanup
+✅ **Domain Management** - Block/allow specific domains
+✅ **Statistics Dashboard** - Monitor usage and performance
+✅ **Environment Configuration** - Easy deployment setup
 
 ## Quick Start
 
@@ -54,7 +54,7 @@ Configure via environment variables:
 
 ```bash
 export PORT=8080              # Server port (default: 8080)
-export QUALITY=85             # Image quality 10-100 (default: 85)
+export QUALITY=90             # Image quality 10-100 (default: 90)
 export MAX_DB_SIZE=500        # Max cache size in MB (default: 500)
 ```
 
@@ -156,7 +156,7 @@ Disabled domains receive HTTP 403 responses.
 
 ## Supported Formats
 
-**Input**: JPEG, PNG, GIF, WebP, SVG  
+**Input**: JPEG, PNG, GIF, WebP, SVG
 **Output**: WebP (preferred), JPEG, PNG, GIF, SVG
 
 ## Performance

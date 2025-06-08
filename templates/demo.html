@@ -131,28 +131,45 @@
         .crop-links a:hover {
             background: #218838;
         }
+        .source-original-container {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        @media (max-width: 768px) {
+            .source-original-container {
+                flex-direction: column;
+            }
+            .source-original-container .image-card {
+                flex: 1 !important;
+            }
+        }
     </style>
 </head>
 <body>
     <h1>Image Resize Demo</h1>
 
-    <div class="source-section">
-        <h2>Image Source</h2>
-        <div class="input-group">
-            <label for="imageUrl">Image URL (leave empty for random Unsplash image):</label>
-            <input type="text" id="imageUrl" placeholder="https://example.com/image.jpg" value="{{.ImageURL}}">
+    <div class="source-original-container">
+        <div class="source-section" style="flex: 1;">
+            <h2>Image Source</h2>
+            <div class="input-group">
+                <label for="imageUrl">Image URL (leave empty for random Unsplash image):</label>
+                <input type="text" id="imageUrl" placeholder="https://example.com/image.jpg" value="{{.ImageURL}}">
+            </div>
+            <div class="button-group">
+                <button onclick="loadImage()">Load Image</button>
+                <button class="secondary-btn" onclick="loadRandomImage()">Random Unsplash Image</button>
+            </div>
+            {{if .ImageURL}}
+            <div style="margin-top: 20px;">
+                <strong>Current Image:</strong> <a href="{{.ImageURL}}" target="_blank">{{.ImageURL}}</a>
+            </div>
+            {{end}}
         </div>
-        {{if .ImageURL}}
-        <div style="margin-top: 20px;">
-            <strong>Current Image:</strong> <a href="{{.ImageURL}}" target="_blank">{{.ImageURL}}</a>
-        </div>
-        {{end}}
-    </div>
 
-    {{if .ImageURL}}
-    <div class="image-grid">
-        <!-- Original -->
-        <div class="image-card">
+        {{if .ImageURL}}
+        <!-- Original image on the right -->
+        <div class="image-card" style="flex: 0 0 300px;">
             <div class="image-header">
                 <h3>Original</h3>
             </div>
@@ -161,7 +178,12 @@
                 <div class="dimensions">Original dimensions</div>
             </div>
         </div>
+        {{end}}
+    </div>
 
+    {{if .ImageURL}}
+    <h4>Width Examples</h4>
+    <div class="image-grid">
         <!-- 100px width -->
         <div class="image-card">
             <div class="image-header">
@@ -197,39 +219,76 @@
     </div>
 
     <!-- Crop examples -->
+    <h4>Crop Examples</h4>
+    <div class="image-grid">
+        <!-- 300x300 crop -->
+        <div class="image-card">
+            <div class="image-header">
+                <h3>300x300 Crop</h3>
+            </div>
+            <div class="image-container">
+                <img src="/resize?src={{.EncodedURL}}&c=300" alt="300x300 crop">
+                <div class="dimensions">c=300</div>
+            </div>
+        </div>
+
+        <!-- 200x200 crop -->
+        <div class="image-card">
+            <div class="image-header">
+                <h3>300x200 Crop</h3>
+            </div>
+            <div class="image-container">
+                <img src="/resize?src={{.EncodedURL}}&c=300x200" alt="200x200 crop">
+                <div class="dimensions">c=300x200</div>
+            </div>
+        </div>
+
+        <!-- 100x100 crop -->
+        <div class="image-card">
+            <div class="image-header">
+                <h3>200x300 Crop</h3>
+            </div>
+            <div class="image-container">
+                <img src="/resize?src={{.EncodedURL}}&c=200x300" alt="100x100 crop">
+                <div class="dimensions">c=200x300</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Height examples -->
     <div class="crop-options">
-        <h4>Crop Examples (100x100, 200x200, 300x300)</h4>
+        <h4>Height Examples</h4>
         <div class="image-grid">
             <!-- 300x300 crop -->
             <div class="image-card">
                 <div class="image-header">
-                    <h3>300x300 Crop</h3>
+                    <h3>300 Height</h3>
                 </div>
                 <div class="image-container">
-                    <img src="/resize?src={{.EncodedURL}}&c=300" alt="300x300 crop">
-                    <div class="dimensions">width=300&height=300&crop=true</div>
+                    <img src="/resize?src={{.EncodedURL}}&h=300" alt="300x300 crop">
+                    <div class="dimensions">h=300</div>
                 </div>
             </div>
 
             <!-- 200x200 crop -->
             <div class="image-card">
                 <div class="image-header">
-                    <h3>200x200 Crop</h3>
+                    <h3>200 Height</h3>
                 </div>
                 <div class="image-container">
-                    <img src="/resize?src={{.EncodedURL}}&c=200" alt="200x200 crop">
-                    <div class="dimensions">width=200&height=200&crop=true</div>
+                    <img src="/resize?src={{.EncodedURL}}&h=200" alt="200x200 crop">
+                    <div class="dimensions">h=200</div>
                 </div>
             </div>
 
             <!-- 100x100 crop -->
             <div class="image-card">
                 <div class="image-header">
-                    <h3>100x100 Crop</h3>
+                    <h3>100 Height</h3>
                 </div>
                 <div class="image-container">
-                    <img src="/resize?src={{.EncodedURL}}&c=100" alt="100x100 crop">
-                    <div class="dimensions">width=100&height=100&crop=true</div>
+                    <img src="/resize?src={{.EncodedURL}}&h=100" alt="100x100 crop">
+                    <div class="dimensions">h=100</div>
                 </div>
             </div>
         </div>

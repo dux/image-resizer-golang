@@ -1,6 +1,7 @@
 package handlers
 
 import (
+  "crypto/subtle"
   "encoding/json"
   "fmt"
   "html/template"
@@ -9,6 +10,7 @@ import (
   "os"
   "path/filepath"
   "strconv"
+  "strings"
   "log"
 
   "image-resize/app/database"
@@ -16,6 +18,41 @@ import (
 
 // MaxAge is the cache max-age in seconds
 var MaxAge int
+
+// BasicAuth middleware for protecting endpoints
+func BasicAuth(handler http.HandlerFunc) http.HandlerFunc {
+  return func(w http.ResponseWriter, r *http.Request) {
+    // Get credentials from environment or use defaults
+    userAndPass := os.Getenv("HTTP_USER_AND_PASS")
+    if userAndPass == "" {
+      userAndPass = "ir:ir"
+    }
+    
+    // Split into username and password
+    parts := strings.SplitN(userAndPass, ":", 2)
+    if len(parts) != 2 {
+      log.Printf("Invalid HTTP_USER_AND_PASS format, using default 'ir:ir'")
+      parts = []string{"ir", "ir"}
+    }
+    expectedUser := parts[0]
+    expectedPass := parts[1]
+    
+    // Get credentials from request
+    user, pass, ok := r.BasicAuth()
+    
+    // Compare credentials using constant-time comparison
+    userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(expectedUser)) == 1
+    passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(expectedPass)) == 1
+    
+    if !ok || !userMatch || !passMatch {
+      w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+      http.Error(w, "Unauthorized", http.StatusUnauthorized)
+      return
+    }
+    
+    handler(w, r)
+  }
+}
 
 func init() {
   // Read MAX_AGE from environment or use default (1 day = 86400 seconds)

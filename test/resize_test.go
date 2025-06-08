@@ -26,24 +26,24 @@ func TestMain(m *testing.M) {
 	if err := database.InitDB(); err != nil {
 		panic(fmt.Sprintf("Failed to initialize test database: %v", err))
 	}
-	
+
 	if err := database.InitRefererDB(); err != nil {
 		panic(fmt.Sprintf("Failed to initialize referer database: %v", err))
 	}
-	
+
 	// Run tests
 	code := m.Run()
-	
+
 	// Clean up
 	os.RemoveAll("tmp")
-	
+
 	os.Exit(code)
 }
 
 func TestResizeHandlerWithStaticFiles(t *testing.T) {
 	// Get the static directory path
 	staticDir := filepath.Join("..", "static")
-	
+
 	// Test files from static directory
 	testFiles := []struct {
 		filename string
@@ -64,9 +64,9 @@ func TestResizeHandlerWithStaticFiles(t *testing.T) {
 		t.Run(tf.filename, func(t *testing.T) {
 			// Test different resize operations
 			testCases := []struct {
-				name   string
-				query  string
-				check  func(*httptest.ResponseRecorder)
+				name  string
+				query string
+				check func(*httptest.ResponseRecorder)
 			}{
 				{
 					name:  "width resize",
@@ -126,22 +126,22 @@ func TestResizeHandlerWithStaticFiles(t *testing.T) {
 				t.Run(tc.name, func(t *testing.T) {
 					req := httptest.NewRequest("GET", "http://example.com/resize"+tc.query, nil)
 					rec := httptest.NewRecorder()
-					
+
 					handlers.ResizeHandler(rec, req)
-					
+
 					tc.check(rec)
-					
+
 					// Verify we got some image data
 					if rec.Body.Len() == 0 {
 						t.Error("response body is empty")
 					}
-					
+
 					// Verify X-Cache header exists
 					cacheHeader := rec.Header().Get("X-Cache")
 					if cacheHeader == "" {
 						t.Error("X-Cache header is missing")
 					}
-					
+
 					// Verify X-Info header exists
 					infoHeader := rec.Header().Get("X-Info")
 					if infoHeader == "" {
@@ -203,13 +203,13 @@ func TestResizeHandlerErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "http://example.com/resize"+tt.query, nil)
 			rec := httptest.NewRecorder()
-			
+
 			handlers.ResizeHandler(rec, req)
-			
+
 			if rec.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rec.Code)
 			}
-			
+
 			body := rec.Body.String()
 			if !bytes.Contains([]byte(body), []byte(tt.expectedBody)) {
 				t.Errorf("expected body to contain %q, got %q", tt.expectedBody, body)
@@ -242,19 +242,19 @@ func TestResizeHandlerInvalidURLs(t *testing.T) {
 			query := fmt.Sprintf("?src=%s&w=100", tt.src)
 			req := httptest.NewRequest("GET", "http://example.com/resize"+query, nil)
 			rec := httptest.NewRecorder()
-			
+
 			handlers.ResizeHandler(rec, req)
-			
+
 			// Should return 200 with error SVG
 			if rec.Code != http.StatusOK {
 				t.Errorf("expected status 200, got %d", rec.Code)
 			}
-			
+
 			contentType := rec.Header().Get("Content-Type")
 			if contentType != tt.expected {
 				t.Errorf("expected Content-Type %s, got %s", tt.expected, contentType)
 			}
-			
+
 			// Verify it's an SVG with error message
 			body := rec.Body.String()
 			if !bytes.Contains([]byte(body), []byte("<svg")) {
@@ -333,13 +333,13 @@ func TestResizeHandlerFormatHandling(t *testing.T) {
 			query := fmt.Sprintf("?src=%s/test.%s&w=100", ts.URL, tt.format)
 			req := httptest.NewRequest("GET", "http://example.com/resize"+query, nil)
 			rec := httptest.NewRecorder()
-			
+
 			handlers.ResizeHandler(rec, req)
-			
+
 			if rec.Code != http.StatusOK {
 				t.Errorf("expected status 200, got %d", rec.Code)
 			}
-			
+
 			contentType := rec.Header().Get("Content-Type")
 			if contentType != tt.expectedOutputType {
 				t.Errorf("expected Content-Type %s, got %s", tt.expectedOutputType, contentType)
@@ -375,7 +375,7 @@ func createTestWebP(width, height int) []byte {
 	var buf bytes.Buffer
 	webp.Encode(&buf, img, &webp.Options{
 		Lossless: false,
-		Quality:  85,
+		Quality:  90,
 	})
 	return buf.Bytes()
 }
@@ -404,14 +404,14 @@ func BenchmarkResizeHandler(b *testing.B) {
 	defer ts.Close()
 
 	query := fmt.Sprintf("?src=%s/test.jpg&w=200", ts.URL)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest("GET", "http://example.com/resize"+query, nil)
 		rec := httptest.NewRecorder()
-		
+
 		handlers.ResizeHandler(rec, req)
-		
+
 		if rec.Code != http.StatusOK {
 			b.Errorf("expected status 200, got %d", rec.Code)
 		}
@@ -425,14 +425,14 @@ func BenchmarkResizeHandlerCrop(b *testing.B) {
 	defer ts.Close()
 
 	query := fmt.Sprintf("?src=%s/test.jpg&c=200x200", ts.URL)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest("GET", "http://example.com/resize"+query, nil)
 		rec := httptest.NewRecorder()
-		
+
 		handlers.ResizeHandler(rec, req)
-		
+
 		if rec.Code != http.StatusOK {
 			b.Errorf("expected status 200, got %d", rec.Code)
 		}
