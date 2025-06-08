@@ -509,28 +509,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache original image (enforce max size and convert to WebP)
-	go func() {
-		// Enforce max size on original image before caching
-		resizedImg := enforceMaxSize(img)
-		
-		// Convert to WebP for storage efficiency
-		webpData, err := encodeWebP(resizedImg, 90)
-		if err != nil {
-			log.Printf("Failed to encode original image as WebP, using original: %v", err)
-			// Fallback to original if WebP encoding fails
-			if err := database.CacheOriginalImage(srcURL, bodyBytes, contentType, format); err != nil {
-				log.Printf("Failed to cache original image: %v", err)
-			}
-		} else {
-			// Cache as WebP
-			if err := database.CacheOriginalImage(srcURL, webpData, "image/webp", "webp"); err != nil {
-				log.Printf("Failed to cache original image as WebP: %v", err)
-			} else {
-				log.Printf("Cached original image as WebP with max size enforcement")
-			}
-		}
-	}()
+	// Don't cache original image anymore - only cache resized versions
 
 	// Resize if needed
 	img = resizeImage(img, params)
@@ -546,7 +525,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Attempting WebP encoding for format: %s", format)
 		data, err := encodeWebP(img, WebPQuality)
 		if err == nil {
-			log.Printf("WebP encoding successful, output size: %d bytes", len(data))
+			log.Printf("WebP encoding successful, output size: %.1f KB", float64(len(data))/1024.0)
 			outputData = data
 			mimeType = "image/webp"
 			outputFormat = "webp"
@@ -580,7 +559,8 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	// Cache resized image if any transformation was applied
 	if params.Width > 0 || params.Height > 0 {
 		go func() {
-			if err := database.CacheImage(srcURL, cacheWidth, bodyBytes, outputData, mimeType, outputFormat); err != nil {
+			// Pass nil for originalData to avoid storing raw image
+			if err := database.CacheImage(srcURL, cacheWidth, nil, outputData, mimeType, outputFormat); err != nil {
 				log.Printf("Failed to cache resized image: %v", err)
 			}
 		}()
@@ -599,12 +579,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSVG(w http.ResponseWriter, srcURL string, svgData []byte, width int) {
-	// Cache original SVG
-	go func() {
-		if err := database.CacheOriginalImage(srcURL, svgData, "image/svg+xml", "svg"); err != nil {
-			log.Printf("Failed to cache original SVG: %v", err)
-		}
-	}()
+	// Don't cache SVG files to save space
 
 	// Return SVG without manipulation
 	w.Header().Set("Content-Type", "image/svg+xml")

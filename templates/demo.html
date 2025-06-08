@@ -34,11 +34,13 @@
         padding: 15px;
         background: #f8f9fa;
         border-bottom: 1px solid #e9ecef;
+        text-align: center;
     }
     .image-header h3 {
         margin: 0;
         color: #333;
         font-size: 16px;
+        text-align: center;
     }
     .image-container {
         padding: 15px;
@@ -46,14 +48,23 @@
         background: #fff;
         position: relative;
         min-height: 200px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
     }
     .image-container img {
         border-radius: 4px;
+        max-width: 100%;
+        height: auto;
+        display: block;
+        margin: 0 auto;
     }
     .dimensions {
         color: #666;
         font-size: 14px;
         margin-top: 10px;
+        text-align: center;
     }
     .input-group {
         margin-bottom: 20px;
@@ -111,15 +122,15 @@
                             </svg>
                         </div>
                         <!-- Image -->
-                        <a href="${imgPath}" target="_preview">
+                        <a href="${imgPath}" target="_preview" style="display: contents;">
                             <img id="${uniqueId}"
                                 src="${imgPath}"
                                 alt="${props.title}"
                                 class="opacity-0 transition-opacity duration-300"
                                 onload="document.getElementById('spinner-${uniqueId}').style.display='none'; this.classList.remove('opacity-0')"
                                 onerror="document.getElementById('spinner-${uniqueId}').innerHTML='<div class=\\'text-red-500 text-sm\\'>Failed to load</div>'">
-                            <div class="dimensions">${props.attr}</div>
                         </a>
+                        <div class="dimensions">${props.attr}</div>
                     </div>
                 </div>
             `;
@@ -157,7 +168,7 @@
 
         {{if .ImageURL}}
         <!-- Original image on the right -->
-        <div class="image-card" style="flex: 0 0 300px;">
+        <div class="image-card" style="flex: 0 0 330px;">
             <div class="image-header">
                 <h3>Original</h3>
             </div>
