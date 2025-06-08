@@ -29,6 +29,9 @@ import (
 // WebPQuality is the quality setting for WebP encoding
 var WebPQuality int
 
+// MaxSize is the maximum width/height allowed for images
+var MaxSize int
+
 func init() {
 	// Read QUALITY from environment or use default
 	qualityStr := os.Getenv("QUALITY")
@@ -44,6 +47,22 @@ func init() {
 	} else {
 		WebPQuality = 90
 	}
+
+	// Read MAX_SIZE from environment or use default
+	maxSizeStr := os.Getenv("MAX_SIZE")
+	if maxSizeStr != "" {
+		maxSize, err := strconv.Atoi(maxSizeStr)
+		if err != nil || maxSize < 100 || maxSize > 10000 {
+			log.Printf("Invalid MAX_SIZE value '%s', must be 100-10000, using default 1600", maxSizeStr)
+			MaxSize = 1600
+		} else {
+			MaxSize = maxSize
+			log.Printf("Max image size set to %d from MAX_SIZE env", MaxSize)
+		}
+	} else {
+		MaxSize = 1600
+		log.Printf("Max image size set to default %d", MaxSize)
+	}
 }
 
 // Helper function to encode image as WebP
@@ -57,6 +76,36 @@ func encodeWebP(img image.Image, quality int) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// enforceMaxSize ensures image dimensions don't exceed MaxSize while preserving aspect ratio
+func enforceMaxSize(img image.Image) image.Image {
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	
+	// If both dimensions are within limits, return original
+	if width <= MaxSize && height <= MaxSize {
+		return img
+	}
+	
+	// Calculate scale factor to fit within MaxSize while preserving aspect ratio
+	scaleX := float64(MaxSize) / float64(width)
+	scaleY := float64(MaxSize) / float64(height)
+	
+	// Use the smaller scale to ensure both dimensions fit
+	scale := scaleX
+	if scaleY < scaleX {
+		scale = scaleY
+	}
+	
+	newWidth := int(float64(width) * scale)
+	newHeight := int(float64(height) * scale)
+	
+	log.Printf("Enforcing max size: original=%dx%d, max=%d, scale=%.3f, new=%dx%d", 
+		width, height, MaxSize, scale, newWidth, newHeight)
+	
+	return imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
 }
 
 // Check if client accepts WebP
@@ -207,7 +256,20 @@ func generateErrorSVG(width, height int) []byte {
 
 // resizeImage applies the resize parameters to the image
 func resizeImage(img image.Image, params *ResizeParams) image.Image {
-	if params.Width == 0 && params.Height == 0 {
+	// Enforce max size limits on requested dimensions
+	targetWidth := params.Width
+	targetHeight := params.Height
+	
+	if targetWidth > MaxSize {
+		targetWidth = MaxSize
+		log.Printf("Requested width %d exceeds max size %d, clamped to %d", params.Width, MaxSize, targetWidth)
+	}
+	if targetHeight > MaxSize {
+		targetHeight = MaxSize
+		log.Printf("Requested height %d exceeds max size %d, clamped to %d", params.Height, MaxSize, targetHeight)
+	}
+	
+	if targetWidth == 0 && targetHeight == 0 {
 		return img // No resizing needed
 	}
 
@@ -222,11 +284,11 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 		origHeight := float64(origBounds.Dy())
 
 		// Calculate scale factor - we need to fill the target dimensions
-		targetWidth := float64(params.Width)
-		targetHeight := float64(params.Height)
+		cropTargetWidth := float64(targetWidth)
+		cropTargetHeight := float64(targetHeight)
 
-		scaleX := targetWidth / origWidth
-		scaleY := targetHeight / origHeight
+		scaleX := cropTargetWidth / origWidth
+		scaleY := cropTargetHeight / origHeight
 
 		// Use the larger scale to ensure we cover the target area
 		scale := scaleX
@@ -238,13 +300,13 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 		newWidth := int(origWidth * scale)
 		newHeight := int(origHeight * scale)
 		log.Printf("Crop debug: original=%dx%d, target=%dx%d, scale=%.2f, resized=%dx%d",
-			int(origWidth), int(origHeight), params.Width, params.Height, scale, newWidth, newHeight)
+			int(origWidth), int(origHeight), targetWidth, targetHeight, scale, newWidth, newHeight)
 		resized := imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
 
 		// Now crop with 70% top focus
-		cropX := (newWidth - params.Width) / 2               // Center horizontally
-		cropY := int(float64(newHeight-params.Height) * 0.3) // 30% from top, 70% from bottom
-		log.Printf("Crop position: x=%d, y=%d, crop to %dx%d", cropX, cropY, params.Width, params.Height)
+		cropX := (newWidth - targetWidth) / 2               // Center horizontally
+		cropY := int(float64(newHeight-targetHeight) * 0.3) // 30% from top, 70% from bottom
+		log.Printf("Crop position: x=%d, y=%d, crop to %dx%d", cropX, cropY, targetWidth, targetHeight)
 
 		// Ensure crop coordinates are valid
 		if cropX < 0 {
@@ -254,23 +316,23 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 			cropY = 0
 		}
 
-		return imaging.Crop(resized, image.Rect(cropX, cropY, cropX+params.Width, cropY+params.Height))
+		return imaging.Crop(resized, image.Rect(cropX, cropY, cropX+targetWidth, cropY+targetHeight))
 	}
 
 	// Resize with max width/height constraint
-	if params.Width > 0 && params.Height > 0 {
+	if targetWidth > 0 && targetHeight > 0 {
 		// Both width and height specified - fit within constraints
-		return imaging.Fit(img, params.Width, params.Height, imaging.Lanczos)
+		return imaging.Fit(img, targetWidth, targetHeight, imaging.Lanczos)
 	}
 
-	if params.Width > 0 {
+	if targetWidth > 0 {
 		// Just width specified (old behavior)
-		return imaging.Resize(img, params.Width, 0, imaging.Lanczos)
+		return imaging.Resize(img, targetWidth, 0, imaging.Lanczos)
 	}
 
-	if params.Height > 0 {
+	if targetHeight > 0 {
 		// Just height specified - resize to fixed height
-		return imaging.Resize(img, 0, params.Height, imaging.Lanczos)
+		return imaging.Resize(img, 0, targetHeight, imaging.Lanczos)
 	}
 
 	// No resize parameters - return original image
@@ -447,10 +509,26 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache original image
+	// Cache original image (enforce max size and convert to WebP)
 	go func() {
-		if err := database.CacheOriginalImage(srcURL, bodyBytes, contentType, format); err != nil {
-			log.Printf("Failed to cache original image: %v", err)
+		// Enforce max size on original image before caching
+		resizedImg := enforceMaxSize(img)
+		
+		// Convert to WebP for storage efficiency
+		webpData, err := encodeWebP(resizedImg, 90)
+		if err != nil {
+			log.Printf("Failed to encode original image as WebP, using original: %v", err)
+			// Fallback to original if WebP encoding fails
+			if err := database.CacheOriginalImage(srcURL, bodyBytes, contentType, format); err != nil {
+				log.Printf("Failed to cache original image: %v", err)
+			}
+		} else {
+			// Cache as WebP
+			if err := database.CacheOriginalImage(srcURL, webpData, "image/webp", "webp"); err != nil {
+				log.Printf("Failed to cache original image as WebP: %v", err)
+			} else {
+				log.Printf("Cached original image as WebP with max size enforcement")
+			}
 		}
 	}()
 

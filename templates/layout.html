@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{block "title" .}}GoLang Image Resizer{{end}}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://dux.github.io/fez/dist/fez.js"></script>
+    <style>
+        /* Custom styles can be added here */
+    </style>
+    <script>
+        // Define navbar component
+        Fez('nav-bar', class {
+            connect() {
+                const currentPath = window.location.pathname;
+                
+                this.root.innerHTML = `
+                    <nav class="bg-gray-900 shadow-lg">
+                        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                            <div class="flex items-center justify-between h-16">
+                                <div class="flex items-center">
+                                    <a href="/" class="flex items-center">
+                                        <span class="text-white text-xl font-bold">GoLang Image Resizer</span>
+                                    </a>
+                                </div>
+                                <div class="flex items-center space-x-4">
+                                    <a href="/" class="nav-link ${currentPath === '/' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                        Home
+                                    </a>
+                                    <a href="/demo" class="nav-link ${currentPath === '/demo' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                        Demo
+                                    </a>
+                                    <a href="/config" class="nav-link ${currentPath === '/config' ? 'text-white bg-gray-700' : 'text-gray-300 hover:text-white'} px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                                        Config
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </nav>
+                `;
+            }
+        });
+    </script>
+    {{block "head" .}}{{end}}
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <nav-bar></nav-bar>
+    
+    <main>
+        {{block "content" .}}{{end}}
+    </main>
+    
+    <footer class="bg-gray-800 text-white py-6 mt-12">
+        <div class="max-w-7xl mx-auto px-4 text-center">
+            <p class="text-sm">
+                GoLang Image Resizer by 
+                <a href="https://twitter.com/dux" class="text-blue-400 hover:text-blue-300">@dux</a>
+                •
+                <a href="https://github.com/dux/image-resizer-golang" class="text-blue-400 hover:text-blue-300">GitHub</a>
+            </p>
+        </div>
+    </footer>
+    
+    {{block "scripts" .}}{{end}}
+</body>
+</html>

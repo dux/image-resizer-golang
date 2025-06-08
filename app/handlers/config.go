@@ -75,6 +75,7 @@ type ConfigInfo struct {
   Port             string                   `json:"port"`
   MaxDBSizeMB      int                      `json:"max_db_size_mb"`
   WebPQuality      int                      `json:"webp_quality"`
+  MaxSize          int                      `json:"max_size"`
   DBSizeMB         float64                  `json:"db_size_mb"`
   DBSizeBytes      int64                    `json:"db_size_bytes"`
   ImageCount       int                      `json:"image_count"`
@@ -135,6 +136,7 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
     Port:             port,
     MaxDBSizeMB:      database.MaxDatabaseSizeMB,
     WebPQuality:      WebPQuality,
+    MaxSize:          MaxSize,
     DBSizeMB:         dbSizeMB,
     DBSizeBytes:      dbSize,
     ImageCount:       imageCount,
@@ -154,8 +156,9 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
   }
 
   // Return HTML response using template
+  layoutPath := filepath.Join("templates", "layout.html")
   tmplPath := filepath.Join("templates", "config.html")
-  tmpl, err := template.ParseFiles(tmplPath)
+  tmpl, err := template.ParseFiles(layoutPath, tmplPath)
   if err != nil {
     http.Error(w, fmt.Sprintf("Failed to load template: %v", err), http.StatusInternalServerError)
     return

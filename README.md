@@ -56,6 +56,7 @@ Configure via environment variables:
 export PORT=8080              # Server port (default: 8080)
 export QUALITY=90             # Image quality 10-100 (default: 90)
 export MAX_DB_SIZE=500        # Max cache size in MB (default: 500)
+export MAX_SIZE=1600          # Max image dimensions in pixels (default: 1600)
 ```
 
 ## API Reference
@@ -159,12 +160,35 @@ Disabled domains receive HTTP 403 responses.
 **Input**: JPEG, PNG, GIF, WebP, SVG
 **Output**: WebP (preferred), JPEG, PNG, GIF, SVG
 
+## Size Limits
+
+The service enforces a maximum size limit for both width and height:
+
+- **Default Limit**: 1600 pixels (configurable via `MAX_SIZE`)
+- **Aspect Ratio**: Always preserved when enforcing limits
+- **Cache Optimization**: Original images resized to max size before caching
+- **WebP Storage**: Cached images stored as WebP for efficiency
+- **Automatic Enforcement**: Requested dimensions automatically clamped to max size
+
+### Examples
+
+```bash
+# Request 2000px width (will be clamped to 1600px)
+GET /r?src=image.jpg&w=2000
+# Returns: 1600px width with proportional height
+
+# Request 3000x2000 crop (will be clamped to 1600x1600)
+GET /r?src=image.jpg&c=3000x2000
+# Returns: 1600x1067 crop (aspect ratio preserved)
+```
+
 ## Performance
 
 - **WebP Encoding**: Reduces file sizes by 25-35%
 - **Smart Caching**: Eliminates repeated processing
 - **Concurrent Processing**: Goroutines for background tasks
 - **Memory Efficient**: Streaming image processing
+- **Size Enforcement**: Prevents memory exhaustion from large images
 
 ## Development
 
