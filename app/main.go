@@ -45,7 +45,7 @@ func main() {
 	mux.HandleFunc("/config", handlers.BasicAuth(handlers.ConfigHandler))
 	mux.HandleFunc("/config/toggle-domain", handlers.BasicAuth(handlers.ToggleDomainHandler))
 	mux.HandleFunc("/logs", handlers.BasicAuth(handlers.LogsHandler))
-	mux.HandleFunc("/ws/logs", handlers.LogsWebSocketHandler)
+	mux.HandleFunc("/ws/logs", handlers.BasicAuth(handlers.LogsWebSocketHandler))
 	mux.HandleFunc("/favicon.ico", handlers.FaviconHandler)
 
 	// Get port from environment variable or use default

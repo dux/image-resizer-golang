@@ -87,14 +87,28 @@ var (
 // broadcastLog sends a log message to all connected WebSocket clients
 func broadcastLog(message string) {
 	clientsMu.RLock()
-	defer clientsMu.RUnlock()
-	
+	clientsCopy := make([]*websocket.Conn, 0, len(clients))
 	for client := range clients {
+		clientsCopy = append(clientsCopy, client)
+	}
+	clientsMu.RUnlock()
+	
+	var toRemove []*websocket.Conn
+	for _, client := range clientsCopy {
 		err := client.WriteMessage(websocket.TextMessage, []byte(message))
 		if err != nil {
 			client.Close()
+			toRemove = append(toRemove, client)
+		}
+	}
+	
+	// Remove disconnected clients
+	if len(toRemove) > 0 {
+		clientsMu.Lock()
+		for _, client := range toRemove {
 			delete(clients, client)
 		}
+		clientsMu.Unlock()
 	}
 }
 
