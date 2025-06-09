@@ -1,3 +1,6 @@
+default:
+	@cat Makefile
+
 build:
 	go build -o bin/server app/main.go
 
@@ -23,4 +26,4 @@ test-image:
 clean:
 	rm -rf bin/
 
-.PHONY: build passenger run test test-resize test-image clean
+.PHONY: default build passenger run test test-resize test-image clean
