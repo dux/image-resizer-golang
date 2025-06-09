@@ -102,12 +102,15 @@
             }
         }
     </style>
+{{end}}
 
+{{define "content"}}
     <xmp fez="img-preview">
         <script>
             connect(props) {
+                const url = '{{.EncodedURL}}'.replaceAll('"', '')
                 this.uniqueId = 'img-' + Math.random().toString(36).substr(2, 9);
-                this.imgPath = `/resize?src={{.EncodedURL}}&${props.attr}`
+                this.imgPath = `/resize?src=${url}&${props.attr}`
             }
 
             showImg(img) {
@@ -147,9 +150,7 @@
             </div>
         </div>
     </xmp>
-{{end}}
 
-{{define "content"}}
     <div class="container mx-auto px-4 py-8">
         <h1 class="text-3xl font-bold text-gray-800 mb-8">Image Resize Demo</h1>
 

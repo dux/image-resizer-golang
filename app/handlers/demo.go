@@ -39,7 +39,7 @@ func DemoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data.ImageURL = src
-	data.EncodedURL = url.QueryEscape(src)
+	data.EncodedURL = strings.Trim(url.QueryEscape(src), `"'`)
 
 	w.Header().Set("Content-Type", "text/html")
 	tmpl.Execute(w, data)

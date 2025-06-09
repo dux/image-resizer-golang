@@ -343,6 +343,16 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 }
 
 func ResizeHandler(w http.ResponseWriter, r *http.Request) {
+	// Handle cases where &amp; might be used instead of &
+	rawQuery := r.URL.RawQuery
+	if strings.Contains(rawQuery, "&amp;") {
+		// Replace &amp; with & and reparse
+		fixedQuery := strings.ReplaceAll(rawQuery, "&amp;", "&")
+		values, _ := url.ParseQuery(fixedQuery)
+		r.URL.RawQuery = fixedQuery
+		r.Form = values
+	}
+
 	srcURL := r.URL.Query().Get("src")
 
 	if srcURL == "" {
