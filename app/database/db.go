@@ -48,16 +48,38 @@ func InitDB() error {
   dbPath := filepath.Join(dbDir, "image_cache.db")
 
   var err error
-  DB, err = sql.Open("sqlite3", dbPath)
+  // Open with optimized settings for performance and concurrency
+  DB, err = sql.Open("sqlite3", dbPath+"?_journal=WAL&_busy_timeout=5000&_synchronous=NORMAL&cache=shared")
   if err != nil {
     return fmt.Errorf("failed to open database: %w", err)
+  }
+
+  // Configure connection pool for better concurrency
+  DB.SetMaxOpenConns(1) // SQLite performs best with single writer
+  DB.SetMaxIdleConns(1)
+  DB.SetConnMaxLifetime(0) // Keep connection alive
+
+  // Enable WAL mode and optimize SQLite settings
+  pragmas := []string{
+    "PRAGMA journal_mode = WAL",
+    "PRAGMA synchronous = NORMAL",
+    "PRAGMA cache_size = -64000", // 64MB cache
+    "PRAGMA temp_store = MEMORY",
+    "PRAGMA mmap_size = 268435456", // 256MB mmap
+    "PRAGMA busy_timeout = 5000",
+  }
+
+  for _, pragma := range pragmas {
+    if _, err := DB.Exec(pragma); err != nil {
+      return fmt.Errorf("failed to set pragma %s: %w", pragma, err)
+    }
   }
 
   if err := createTables(); err != nil {
     return fmt.Errorf("failed to create tables: %w", err)
   }
 
-  log.Printf("Database initialized at: %s", dbPath)
+  log.Printf("Database initialized at: %s with WAL mode and optimizations", dbPath)
   return nil
 }
 
@@ -108,12 +130,23 @@ func GetCachedImage(url string, width int) ([]byte, string, string, error) {
     `
   }
 
-  err := DB.QueryRow(query, url, width).Scan(&data, &contentType, &responseFormat)
+  // Retry logic for busy database
+  var err error
+  for i := 0; i < 3; i++ {
+    err = DB.QueryRow(query, url, width).Scan(&data, &contentType, &responseFormat)
+    if err == nil || err == sql.ErrNoRows {
+      break
+    }
+    if i < 2 {
+      time.Sleep(time.Millisecond * 50)
+    }
+  }
+
   if err == sql.ErrNoRows {
     return nil, "", "", nil
   }
   if err != nil {
-    return nil, "", "", err
+    return nil, "", "", fmt.Errorf("database query failed after retries: %w", err)
   }
 
   return data, contentType, responseFormat, nil
@@ -125,12 +158,19 @@ func CacheImage(url string, width int, originalData, resizedData []byte, content
     VALUES (?, ?, ?, ?, ?, ?)
   `
 
-  _, err := DB.Exec(query, url, width, originalData, resizedData, contentType, responseFormat)
-  if err != nil {
-    return fmt.Errorf("failed to cache image: %w", err)
+  // Retry logic for busy database
+  var err error
+  for i := 0; i < 3; i++ {
+    _, err = DB.Exec(query, url, width, originalData, resizedData, contentType, responseFormat)
+    if err == nil {
+      return nil
+    }
+    if i < 2 {
+      time.Sleep(time.Millisecond * 50)
+    }
   }
 
-  return nil
+  return fmt.Errorf("failed to cache image after retries: %w", err)
 }
 
 func CacheOriginalImage(url string, data []byte, contentType, responseFormat string) error {
@@ -139,12 +179,19 @@ func CacheOriginalImage(url string, data []byte, contentType, responseFormat str
     VALUES (?, 0, ?, ?, ?)
   `
 
-  _, err := DB.Exec(query, url, data, contentType, responseFormat)
-  if err != nil {
-    return fmt.Errorf("failed to cache original image: %w", err)
+  // Retry logic for busy database
+  var err error
+  for i := 0; i < 3; i++ {
+    _, err = DB.Exec(query, url, data, contentType, responseFormat)
+    if err == nil {
+      return nil
+    }
+    if i < 2 {
+      time.Sleep(time.Millisecond * 50)
+    }
   }
 
-  return nil
+  return fmt.Errorf("failed to cache original image after retries: %w", err)
 }
 
 // GetDatabaseSize returns the size of the database file in bytes
@@ -159,9 +206,16 @@ func GetDatabaseSize() (int64, error) {
 
 // DeleteOldestImages deletes the oldest half of cached images
 func DeleteOldestImages() error {
+  // Use a transaction for atomic cleanup
+  tx, err := DB.Begin()
+  if err != nil {
+    return fmt.Errorf("failed to begin transaction: %w", err)
+  }
+  defer tx.Rollback()
+
   // First, get the total count of images
   var totalCount int
-  err := DB.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&totalCount)
+  err = tx.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&totalCount)
   if err != nil {
     return fmt.Errorf("failed to count images: %w", err)
   }
@@ -186,7 +240,7 @@ func DeleteOldestImages() error {
     )
   `
 
-  result, err := DB.Exec(query, deleteCount)
+  result, err := tx.Exec(query, deleteCount)
   if err != nil {
     return fmt.Errorf("failed to delete old images: %w", err)
   }
@@ -195,6 +249,18 @@ func DeleteOldestImages() error {
   if err != nil {
     return fmt.Errorf("failed to get rows affected: %w", err)
   }
+
+  // Commit the transaction
+  if err := tx.Commit(); err != nil {
+    return fmt.Errorf("failed to commit cleanup transaction: %w", err)
+  }
+
+  // VACUUM in the background to reclaim space
+  go func() {
+    if _, err := DB.Exec("VACUUM"); err != nil {
+      log.Printf("Failed to vacuum database: %v", err)
+    }
+  }()
 
   log.Printf("Database cleanup: deleted %d old cached images", rowsAffected)
   return nil

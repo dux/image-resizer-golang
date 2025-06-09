@@ -26,16 +26,38 @@ func InitRefererDB() error {
 	dbPath := filepath.Join(dbDir, "http_refers.db")
 
 	var err error
-	RefererDB, err = sql.Open("sqlite3", dbPath)
+	// Open with optimized settings for performance and concurrency
+	RefererDB, err = sql.Open("sqlite3", dbPath+"?_journal=WAL&_busy_timeout=5000&_synchronous=NORMAL&cache=shared")
 	if err != nil {
 		return fmt.Errorf("failed to open referer database: %w", err)
+	}
+
+	// Configure connection pool for better concurrency
+	RefererDB.SetMaxOpenConns(1) // SQLite performs best with single writer
+	RefererDB.SetMaxIdleConns(1)
+	RefererDB.SetConnMaxLifetime(0) // Keep connection alive
+
+	// Enable WAL mode and optimize SQLite settings
+	pragmas := []string{
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA synchronous = NORMAL",
+		"PRAGMA cache_size = -32000", // 32MB cache
+		"PRAGMA temp_store = MEMORY",
+		"PRAGMA mmap_size = 134217728", // 128MB mmap
+		"PRAGMA busy_timeout = 5000",
+	}
+
+	for _, pragma := range pragmas {
+		if _, err := RefererDB.Exec(pragma); err != nil {
+			return fmt.Errorf("failed to set pragma %s: %w", pragma, err)
+		}
 	}
 
 	if err := createRefererTables(); err != nil {
 		return fmt.Errorf("failed to create referer tables: %w", err)
 	}
 
-	log.Printf("Referer database initialized at: %s", dbPath)
+	log.Printf("Referer database initialized at: %s with WAL mode and optimizations", dbPath)
 	return nil
 }
 
@@ -104,36 +126,27 @@ func TrackReferer(referer string) error {
 	baseDomain := ExtractBaseDomain(referer)
 	today := time.Now().Format("2006-01-02")
 
-	// Try to increment existing record first
+	// Use UPSERT with retry logic
 	query := `
-		UPDATE referer_tracking 
-		SET request_count = request_count + 1 
-		WHERE base_domain = ? AND date_requested = ?
+		INSERT INTO referer_tracking (base_domain, date_requested, request_count)
+		VALUES (?, ?, 1)
+		ON CONFLICT(base_domain, date_requested)
+		DO UPDATE SET request_count = request_count + 1
 	`
 	
-	result, err := RefererDB.Exec(query, baseDomain, today)
-	if err != nil {
-		return fmt.Errorf("failed to update referer tracking: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	// If no rows were updated, insert a new record
-	if rowsAffected == 0 {
-		insertQuery := `
-			INSERT INTO referer_tracking (base_domain, date_requested, request_count)
-			VALUES (?, ?, 1)
-		`
-		_, err = RefererDB.Exec(insertQuery, baseDomain, today)
-		if err != nil {
-			return fmt.Errorf("failed to insert referer tracking: %w", err)
+	// Retry logic for busy database
+	var err error
+	for i := 0; i < 3; i++ {
+		_, err = RefererDB.Exec(query, baseDomain, today)
+		if err == nil {
+			return nil
+		}
+		if i < 2 {
+			time.Sleep(time.Millisecond * 50)
 		}
 	}
 
-	return nil
+	return fmt.Errorf("failed to track referer after retries: %w", err)
 }
 
 // GetRefererStats returns referer statistics for a given date range
