@@ -159,7 +159,7 @@
             <div class="source-section" style="flex: 1;">
                 <h2>Image Source</h2>
                 <div class="input-group">
-                    <label for="imageUrl">Image URL (leave empty for random Unsplash image):</label>
+                    <label for="imageUrl">Image URL (leave empty for random Pixabay image):</label>
                     <input type="text" id="imageUrl" placeholder="https://example.com/image.jpg" value="{{.ImageURL}}">
                 </div>
                 <div class="button-group">
@@ -167,7 +167,7 @@
                         Load Image
                     </button>
                     <button onclick="loadRandomImage()" class="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-medium py-2.5 px-5 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md transform hover:-translate-y-0.5">
-                        ✨ Random Unsplash Image
+                        ✨ Random Pixabay Image
                     </button>
                 </div>
                 {{if .ImageURL}}
