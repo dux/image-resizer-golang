@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # Standalone application
+  app:
+    build: .
+    container_name: image-resizer
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - QUALITY=90
+      - MAX_DB_SIZE=500
+      - MAX_SIZE=1600
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  # Application with Nginx reverse proxy
+  app-nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    container_name: image-resizer-nginx
+    ports:
+      - "80:80"
+    environment:
+      - PORT=8080
+      - QUALITY=90
+      - MAX_DB_SIZE=500
+      - MAX_SIZE=1600
+    volumes:
+      - ./data-nginx:/app/data
+    restart: unless-stopped
+    profiles:
+      - nginx
+
+  # Development version with hot reload
+  dev:
+    build:
+      context: .
+      target: builder
+    container_name: image-resizer-dev
+    working_dir: /app
+    command: go run ./app/main.go
+    ports:
+      - "8081:8080"
+    environment:
+      - PORT=8080
+      - QUALITY=90
+      - MAX_DB_SIZE=500
+      - MAX_SIZE=1600
+    volumes:
+      - .:/app
+      - ./data-dev:/app/data
+    restart: unless-stopped
+    profiles:
+      - dev

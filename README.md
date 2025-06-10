@@ -19,8 +19,10 @@ A fast, efficient image resizing service built in Go with WebP support, intellig
 ## Quick Start
 
 ### Prerequisites
-- Go 1.19+ installed
+- Go 1.21+ installed
 - Git
+- SQLite development libraries (for CGO)
+- WebP development libraries (for image processing)
 
 ### Installation
 
@@ -306,19 +308,78 @@ app/
 
 ## Docker Support
 
-```dockerfile
-FROM golang:1.21-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN cd app && go build -o image-resizer main.go
+### Quick Start with Docker
 
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
-WORKDIR /root/
-COPY --from=builder /app/app/image-resizer .
-COPY --from=builder /app/templates ./templates
-EXPOSE 8080
-CMD ["./image-resizer"]
+```bash
+# Build the Docker image
+docker build -t image-resizer .
+
+# Run the container
+docker run -d -p 8080:8080 --name image-resizer image-resizer
+
+# With custom configuration
+docker run -d \
+  -p 8080:8080 \
+  -e PORT=8080 \
+  -e QUALITY=85 \
+  -e MAX_DB_SIZE=1000 \
+  -e MAX_SIZE=2000 \
+  -v $(pwd)/data:/app/data \
+  --name image-resizer \
+  image-resizer
+```
+
+### Docker Compose
+
+The project includes a `docker-compose.yml` with multiple configurations:
+
+```bash
+# Run standalone application (port 8080)
+docker-compose up -d app
+
+# Run with Nginx reverse proxy (port 80)
+docker-compose --profile nginx up -d
+
+# Run development mode with hot reload (port 8081)
+docker-compose --profile dev up -d
+```
+
+#### Environment Variables
+
+All services support these environment variables:
+
+- `PORT`: Application port (default: 8080)
+- `QUALITY`: Image compression quality 10-100 (default: 90)
+- `MAX_DB_SIZE`: Maximum cache size in MB (default: 500)
+- `MAX_SIZE`: Maximum image dimensions (default: 1600)
+
+### Production Deployment with Nginx
+
+The Nginx-enabled Docker image (`Dockerfile.nginx`) includes:
+
+- **Reverse Proxy**: Nginx forwards requests to the Go application
+- **Static File Serving**: Nginx serves static files directly
+- **Caching**: Built-in proxy caching for better performance
+- **Compression**: Gzip compression enabled
+- **Security Headers**: X-Content-Type-Options, X-Frame-Options, etc.
+- **WebSocket Support**: For live logs functionality
+- **Health Check**: `/health` endpoint for monitoring
+- **WebP Tools**: `cwebp` and `dwebp` utilities included
+
+```bash
+# Build and run with Nginx
+docker build -f Dockerfile.nginx -t image-resizer-nginx .
+docker run -d -p 80:80 -v $(pwd)/data:/app/data image-resizer-nginx
+```
+
+### Docker Hub
+
+```bash
+# Pull from Docker Hub (if published)
+docker pull yourusername/image-resizer:latest
+
+# Run from Docker Hub
+docker run -d -p 8080:8080 yourusername/image-resizer:latest
 ```
 
 ## License

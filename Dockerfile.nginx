@@ -1,0 +1,122 @@
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache gcc musl-dev sqlite-dev libwebp-dev
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the application with proper SQLite flags
+RUN CGO_ENABLED=1 GOOS=linux \
+    CGO_CFLAGS="-D_LARGEFILE64_SOURCE" \
+    go build -a -installsuffix cgo -o bin/server ./app
+
+# Runtime stage with Nginx
+FROM alpine:latest
+
+# Install runtime dependencies including nginx and supervisor
+RUN apk add --no-cache \
+    ca-certificates \
+    sqlite-libs \
+    libwebp \
+    libwebp-tools \
+    nginx \
+    supervisor
+
+WORKDIR /app
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/tmp /run/nginx /var/log/supervisor
+
+# Copy binary from builder
+COPY --from=builder /app/bin/server .
+
+# Copy static files and templates
+COPY --from=builder /app/static ./static
+COPY --from=builder /app/templates ./templates
+
+# Nginx configuration
+RUN echo 'server { \
+    listen 80; \
+    server_name _; \
+    \
+    location / { \
+        proxy_pass http://127.0.0.1:8080; \
+        proxy_set_header Host $host; \
+        proxy_set_header X-Real-IP $remote_addr; \
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \
+        proxy_set_header X-Forwarded-Proto $scheme; \
+        \
+        # Cache settings \
+        proxy_cache_valid 200 301 302 1h; \
+        proxy_cache_valid 404 1m; \
+        \
+        # WebSocket support for logs \
+        proxy_http_version 1.1; \
+        proxy_set_header Upgrade $http_upgrade; \
+        proxy_set_header Connection "upgrade"; \
+    } \
+    \
+    # Health check endpoint \
+    location /health { \
+        access_log off; \
+        proxy_pass http://127.0.0.1:8080/hello; \
+    } \
+    \
+    # Serve static files directly \
+    location /static/ { \
+        alias /app/static/; \
+        expires 7d; \
+        add_header Cache-Control "public, immutable"; \
+    } \
+    \
+    # Security headers \
+    add_header X-Content-Type-Options "nosniff" always; \
+    add_header X-Frame-Options "DENY" always; \
+    add_header X-XSS-Protection "1; mode=block" always; \
+    \
+    # Gzip compression \
+    gzip on; \
+    gzip_vary on; \
+    gzip_min_length 1024; \
+    gzip_types text/plain text/css text/xml text/javascript application/javascript application/xml+rss application/json image/svg+xml; \
+}' > /etc/nginx/http.d/default.conf
+
+# Supervisor configuration
+RUN echo '[supervisord] \
+nodaemon=true \
+logfile=/var/log/supervisor/supervisord.log \
+pidfile=/var/run/supervisord.pid \
+\
+[program:nginx] \
+command=nginx -g "daemon off;" \
+autostart=true \
+autorestart=true \
+stdout_logfile=/dev/stdout \
+stdout_logfile_maxbytes=0 \
+stderr_logfile=/dev/stderr \
+stderr_logfile_maxbytes=0 \
+\
+[program:app] \
+command=/app/server \
+directory=/app \
+autostart=true \
+autorestart=true \
+stdout_logfile=/dev/stdout \
+stdout_logfile_maxbytes=0 \
+stderr_logfile=/dev/stderr \
+stderr_logfile_maxbytes=0 \
+environment=PORT="8080"' > /etc/supervisord.conf
+
+# Expose port 80 (nginx)
+EXPOSE 80
+
+# Run supervisor
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
