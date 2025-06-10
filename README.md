@@ -6,15 +6,15 @@ A fast, efficient image resizing service built in Go with WebP support, intellig
 
 ## Features
 
-✅ **WebP Support** - Automatic WebP encoding for modern browsers
-✅ **Multiple Resize Modes** - Width, height, fit, and crop options
-✅ **Modern URL Format** - Clean URLs like `/r/w200?example.com/image.jpg`
-✅ **Auto-HTTPS** - Automatically prepends `https://` to URLs without protocol
-✅ **SVG Passthrough** - SVG files served without modification
-✅ **SQLite Caching** - Fast database cache with auto-cleanup
-✅ **Domain Management** - Block/allow specific domains
-✅ **Statistics Dashboard** - Monitor usage and performance
-✅ **Environment Configuration** - Easy deployment setup
+* ✅ **WebP Support** - Automatic WebP encoding for modern browsers
+* ✅ **Multiple Resize Modes** - Width, height, fit, and crop options
+* ✅ **Modern URL Format** - Clean URLs like `/r/w200?example.com/image.jpg`
+* ✅ **Auto-HTTPS** - Automatically prepends `https://` to URLs without protocol
+* ✅ **SVG Passthrough** - SVG files served without modification
+* ✅ **SQLite Caching** - Fast database cache with auto-cleanup
+* ✅ **Domain Management** - Block/allow specific domains
+* ✅ **Statistics Dashboard** - Monitor usage and performance
+* ✅ **Environment Configuration** - Easy deployment setup
 
 ## Quick Start
 
@@ -62,11 +62,26 @@ http://localhost:8080/r?src=https://example.com/image.jpg&w=200
 
 ```bash
 # Build binary
-cd app
-go build -o image-resizer main.go
+make build
 
 # Run
-./image-resizer
+PORT=4000 bin/server
+```
+
+### SystemD Service
+
+Generate systemd service configuration:
+
+```bash
+# Output systemd service file
+make systemd
+
+# Save to system (as root)
+make systemd > /etc/systemd/system/image-resizer.service
+
+# Enable and start service
+systemctl enable image-resizer
+systemctl start image-resizer
 ```
 
 ## Configuration
