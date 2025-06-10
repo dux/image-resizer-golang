@@ -110,7 +110,7 @@
             connect(props) {
                 const url = '{{.EncodedURL}}'.replaceAll('"', '')
                 this.uniqueId = 'img-' + Math.random().toString(36).substr(2, 9);
-                this.imgPath = `/resize?src=${url}&${props.attr}`
+                this.imgPath = `/r/${props.attr}?${decodeURIComponent(url)}`
             }
 
             showImg(img) {

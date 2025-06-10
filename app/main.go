@@ -38,7 +38,7 @@ func main() {
 
 	mux.HandleFunc("/", handlers.HomeHandler)
 	mux.HandleFunc("/i", handlers.ImageInfoHandler)
-	mux.HandleFunc("/r", handlers.ResizeHandler)
+	mux.HandleFunc("/r/", handlers.ResizeHandler)
 	mux.HandleFunc("/resize", handlers.ResizeHandler)
 	mux.HandleFunc("/demo", handlers.DemoHandler)
 	mux.HandleFunc("/c", handlers.BasicAuth(handlers.ConfigHandler))
@@ -47,6 +47,10 @@ func main() {
 	mux.HandleFunc("/logs", handlers.BasicAuth(handlers.LogsHandler))
 	mux.HandleFunc("/ws/logs", handlers.BasicAuth(handlers.LogsWebSocketHandler))
 	mux.HandleFunc("/favicon.ico", handlers.FaviconHandler)
+	
+	// Serve static files
+	fs := http.FileServer(http.Dir("static"))
+	mux.Handle("/static/", http.StripPrefix("/static/", fs))
 
 	// Get port from environment variable or use default
 	port := os.Getenv("PORT")

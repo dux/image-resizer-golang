@@ -353,7 +353,72 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		r.Form = values
 	}
 
-	srcURL := r.URL.Query().Get("src")
+	// Parse the new URL format: /r/w=200?https://...
+	// Extract parameters from path
+	path := strings.TrimPrefix(r.URL.Path, "/r/")
+	var params *ResizeParams
+	if path != "" && path != "r" {
+		// Parse parameters from path like "w=200" or "c=100x100"
+		paramParts := strings.Split(path, "?")
+		if len(paramParts) > 0 {
+			// Create a fake request to reuse parseResizeParams
+			fakeReq := &http.Request{URL: &url.URL{}}
+			fakeQuery := url.Values{}
+			
+			// Parse each parameter
+			for _, param := range strings.Split(paramParts[0], "&") {
+				if param == "" {
+					continue
+				}
+				
+				// Check if parameter has = sign
+				if strings.Contains(param, "=") {
+					parts := strings.SplitN(param, "=", 2)
+					if len(parts) == 2 {
+						fakeQuery.Set(parts[0], parts[1])
+					}
+				} else {
+					// Handle format without = sign (e.g., "w200", "c300", "h150")
+					if len(param) > 1 {
+						// Extract the parameter type (first character) and value
+						paramType := param[0:1]
+						paramValue := param[1:]
+						
+						// Validate that the value is numeric (with optional 'x' for crop)
+						if paramType == "w" || paramType == "h" || paramType == "c" {
+							fakeQuery.Set(paramType, paramValue)
+						}
+					}
+				}
+			}
+			fakeReq.URL.RawQuery = fakeQuery.Encode()
+			
+			var err error
+			params, err = parseResizeParams(fakeReq)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Invalid parameters: %v", err), http.StatusBadRequest)
+				return
+			}
+		}
+	} else {
+		// Fall back to old format - parse from query parameters
+		var err error
+		params, err = parseResizeParams(r)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid parameters: %v", err), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// The source URL is now the entire query string for new format
+	var srcURL string
+	if path != "" && path != "r" && r.URL.RawQuery != "" {
+		// New format: the entire query string is the URL
+		srcURL = r.URL.RawQuery
+	} else {
+		// Old format: get from src parameter
+		srcURL = r.URL.Query().Get("src")
+	}
 
 	if srcURL == "" {
 		http.Error(w, "Missing src parameter", http.StatusBadRequest)
@@ -367,6 +432,14 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srcURL = decodedURL
+
+	// If URL doesn't have a protocol, assume https://
+	if !strings.HasPrefix(srcURL, "http://") && !strings.HasPrefix(srcURL, "https://") && !strings.HasPrefix(srcURL, "//") {
+		// Check if it looks like a domain (contains a dot)
+		if strings.Contains(srcURL, ".") {
+			srcURL = "https://" + srcURL
+		}
+	}
 
 	// Fix common URL malformations (missing slash after protocol)
 	if strings.HasPrefix(srcURL, "https:/") && !strings.HasPrefix(srcURL, "https://") {
@@ -384,12 +457,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Parse resize parameters
-	params, err := parseResizeParams(r)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Invalid parameters: %v", err), http.StatusBadRequest)
-		return
-	}
+	// params already parsed above
 
 	// For backward compatibility with the database cache
 	// We'll use the width value for simple width-only resizes
