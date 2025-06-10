@@ -16,16 +16,16 @@
         white-space: pre-wrap;
         word-wrap: break-word;
     }
-    
+
     .log-line {
         padding: 2px 0;
         line-height: 1.4;
     }
-    
+
     .log-line:hover {
         background: #2a2a2a;
     }
-    
+
     .connection-status {
         padding: 0.5rem 1rem;
         border-radius: 0.5rem;
@@ -35,51 +35,51 @@
         display: inline-flex;
         align-items: center;
     }
-    
+
     .connected {
         background: #d4edda;
         color: #155724;
         border: 1px solid #c3e6cb;
     }
-    
+
     .disconnected {
         background: #f8d7da;
         color: #721c24;
         border: 1px solid #f5c6cb;
     }
-    
+
     .connecting {
         background: #fff3cd;
         color: #856404;
         border: 1px solid #ffeeba;
     }
-    
+
     .controls {
         margin-bottom: 20px;
         display: flex;
         gap: 10px;
         align-items: center;
     }
-    
+
     .log-count {
         margin-left: auto;
         color: #666;
         font-size: 14px;
     }
-    
+
     /* Syntax highlighting for common log patterns */
     .timestamp {
         color: #569cd6;
     }
-    
+
     .error {
         color: #f44747;
     }
-    
+
     .warning {
         color: #dcdcaa;
     }
-    
+
     .info {
         color: #4ec9b0;
     }
@@ -89,7 +89,7 @@
 {{define "content"}}
 <div class="container mx-auto px-4 py-8">
     <h1 class="text-3xl font-bold text-gray-800 mb-8">Live Logs</h1>
-    
+
     <div class="controls">
         <div id="status" class="connection-status connecting">Connecting...</div>
         <button id="clearBtn" class="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200">
@@ -102,7 +102,7 @@
             <span id="logCount">0</span> lines
         </div>
     </div>
-    
+
     <div id="logContainer" class="log-container">
         <div id="logs"></div>
     </div>
@@ -115,77 +115,77 @@
     let isPaused = false;
     let logBuffer = [];
     let autoScroll = true;
-    
+
     const statusEl = document.getElementById('status');
     const logsEl = document.getElementById('logs');
     const logContainer = document.getElementById('logContainer');
     const clearBtn = document.getElementById('clearBtn');
     const pauseBtn = document.getElementById('pauseBtn');
     const logCountEl = document.getElementById('logCount');
-    
+
     function setStatus(status, message) {
         statusEl.className = 'connection-status ' + status;
         statusEl.textContent = message;
     }
-    
+
     function formatLogLine(line) {
         // Basic syntax highlighting
         let formatted = line;
-        
+
         // Highlight timestamps (various formats)
         formatted = formatted.replace(/(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2})/g, '<span class="timestamp">$1</span>');
         formatted = formatted.replace(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/g, '<span class="timestamp">$1</span>');
-        
+
         // Highlight error keywords
         formatted = formatted.replace(/(ERROR|Error|error|FAIL|Failed|failed)/g, '<span class="error">$1</span>');
-        
+
         // Highlight warning keywords
         formatted = formatted.replace(/(WARN|Warning|warning)/g, '<span class="warning">$1</span>');
-        
+
         // Highlight info keywords
         formatted = formatted.replace(/(INFO|Info|info)/g, '<span class="info">$1</span>');
-        
+
         return formatted;
     }
-    
+
     function addLogLine(line) {
         if (isPaused) {
             logBuffer.push(line);
             return;
         }
-        
+
         const logLine = document.createElement('div');
         logLine.className = 'log-line';
         logLine.innerHTML = formatLogLine(line);
         logsEl.appendChild(logLine);
-        
+
         // Update count
         logCountEl.textContent = logsEl.children.length;
-        
+
         // Auto scroll to bottom if enabled
         if (autoScroll) {
             logContainer.scrollTop = logContainer.scrollHeight;
         }
-        
+
         // Limit number of lines to prevent memory issues
         while (logsEl.children.length > 5000) {
             logsEl.removeChild(logsEl.firstChild);
         }
     }
-    
+
     function connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
-        
+        const wsUrl = protocol + '//' + window.location.host + '/ws/logs';
+
         setStatus('connecting', 'Connecting...');
-        
+
         ws = new WebSocket(wsUrl);
-        
+
         ws.onopen = function() {
             setStatus('connected', 'Connected');
             console.log('WebSocket connected');
         };
-        
+
         ws.onmessage = function(event) {
             const lines = event.data.split('\n');
             lines.forEach(line => {
@@ -194,47 +194,47 @@
                 }
             });
         };
-        
+
         ws.onerror = function(error) {
             console.error('WebSocket error:', error);
             setStatus('disconnected', 'Connection error');
         };
-        
+
         ws.onclose = function() {
             setStatus('disconnected', 'Disconnected - Reconnecting...');
             // Reconnect after 3 seconds
             setTimeout(connect, 3000);
         };
     }
-    
+
     // Clear logs
     clearBtn.addEventListener('click', function() {
         logsEl.innerHTML = '';
         logCountEl.textContent = '0';
         logBuffer = [];
     });
-    
+
     // Pause/Resume
     pauseBtn.addEventListener('click', function() {
         isPaused = !isPaused;
         pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
-        pauseBtn.className = isPaused ? 
+        pauseBtn.className = isPaused ?
             'bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200' :
             'bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200';
-        
+
         if (!isPaused && logBuffer.length > 0) {
             // Add buffered logs
             logBuffer.forEach(line => addLogLine(line));
             logBuffer = [];
         }
     });
-    
+
     // Detect manual scrolling
     logContainer.addEventListener('scroll', function() {
         const isAtBottom = logContainer.scrollHeight - logContainer.scrollTop === logContainer.clientHeight;
         autoScroll = isAtBottom;
     });
-    
+
     // Start connection
     connect();
 </script>
