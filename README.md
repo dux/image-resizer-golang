@@ -8,6 +8,8 @@ A fast, efficient image resizing service built in Go with WebP support, intellig
 
 ✅ **WebP Support** - Automatic WebP encoding for modern browsers
 ✅ **Multiple Resize Modes** - Width, height, fit, and crop options
+✅ **Modern URL Format** - Clean URLs like `/r/w200?example.com/image.jpg`
+✅ **Auto-HTTPS** - Automatically prepends `https://` to URLs without protocol
 ✅ **SVG Passthrough** - SVG files served without modification
 ✅ **SQLite Caching** - Fast database cache with auto-cleanup
 ✅ **Domain Management** - Block/allow specific domains
@@ -37,6 +39,25 @@ go run main.go
 
 The server will start on `http://localhost:8080`
 
+### Quick Examples
+
+```bash
+# Resize to 200px width (new format)
+http://localhost:8080/r/w200?example.com/image.jpg
+
+# Crop to 300x300 square
+http://localhost:8080/r/c300?example.com/image.jpg
+
+# Multiple parameters
+http://localhost:8080/r/c300x200?example.com/image.jpg
+
+# With explicit protocol
+http://localhost:8080/r/w=200?https://example.com/image.jpg
+
+# Legacy format (still supported)
+http://localhost:8080/r?src=https://example.com/image.jpg&w=200
+```
+
 ### Build for Production
 
 ```bash
@@ -63,43 +84,85 @@ export MAX_SIZE=1600          # Max image dimensions in pixels (default: 1600)
 
 ### Image Resizing - `/r`
 
-Resize images with various parameters:
+Resize images with various parameters. The service supports two URL formats:
+
+#### New Format (Recommended)
+Parameters in the path, URL as query string:
+```
+GET /r/w=300?https://example.com/image.jpg
+GET /r/w300?example.com/image.jpg         # Optional = sign, auto-prepends https://
+```
+
+#### Legacy Format
+Traditional query parameters:
+```
+GET /r?src=https://example.com/image.jpg&w=300
+```
+
+### Resize Parameters
 
 #### Fixed Width
 ```
+# New format
+GET /r/w=300?https://example.com/image.jpg
+GET /r/w300?example.com/image.jpg
+
+# Legacy format
 GET /r?src=https://example.com/image.jpg&w=300
 ```
 Resize to 300px width, height scales proportionally.
 
 #### Fixed Height
 ```
+# New format
+GET /r/h=200?https://example.com/image.jpg
+GET /r/h200?example.com/image.jpg
+
+# Legacy format
 GET /r?src=https://example.com/image.jpg&h=200
 ```
 Resize to 200px height, width scales proportionally.
 
 #### Fit Within Bounds
 ```
+# New format
+GET /r/w=300&h=200?https://example.com/image.jpg
+GET /r/w=300x200?https://example.com/image.jpg
+
+# Legacy format
 GET /r?src=https://example.com/image.jpg&w=300&h=200
 ```
 Fit image within 300x200 constraints while maintaining aspect ratio.
 
 #### Crop to Exact Size
 ```
+# New format
+GET /r/c=300x200?https://example.com/image.jpg
+GET /r/c300x200?example.com/image.jpg
+
+# Legacy format
 GET /r?src=https://example.com/image.jpg&c=300x200
 ```
 Crop to exactly 300x200 with smart cropping (70% top focus).
 
 #### Square Crop
 ```
+# New format
+GET /r/c=300?https://example.com/image.jpg
+GET /r/c300?example.com/image.jpg
+
+# Legacy format
 GET /r?src=https://example.com/image.jpg&c=300
 ```
 Crop to 300x300 square.
 
-#### Width with Height Dimension
-```
-GET /r?src=https://example.com/image.jpg&w=300x200
-```
-Alternative syntax for fit within bounds.
+### URL Format Features
+
+- **Optional equals sign**: Both `/r/w=200` and `/r/w200` are valid
+- **Auto-HTTPS**: URLs without protocol default to `https://`
+  - `example.com/image.jpg` → `https://example.com/image.jpg`
+- **Query string preservation**: Full URL including parameters is preserved
+  - `/r/w200?example.com/image.jpg?param1=value1&param2=value2`
 
 ### Image Information - `/i`
 
@@ -120,6 +183,13 @@ Returns JSON with image properties:
   "filename": "image.jpg"
 }
 ```
+
+### Demo Page - `/demo`
+
+Interactive demo page to test image resizing:
+- Try different resize parameters
+- Test with random Pixabay images
+- See live examples of all resize modes
 
 ### Configuration Dashboard - `/c`
 
