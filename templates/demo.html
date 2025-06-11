@@ -112,11 +112,27 @@
                 const url = '{{.EncodedURL}}'.replaceAll('"', '').replace('https%3A%2F%2F', '')
                 const attr = props.attr.replace(/=/g, '');
                 this.imgPath = `/r/${attr}?${url}`
+                this.originalTitle = props.title;
             }
 
-            showImg(img) {
+            async showImg(img) {
                 this.spinnerNode.style.display ='none';
                 setTimeout(() => img.classList.remove('opacity-0'), 10)
+
+                // Fetch image size
+                try {
+                    const response = await fetch(img.src);
+                    const blob = await response.blob();
+                    const sizeKB = (blob.size / 1024).toFixed(1);
+
+                    // Update title with size
+                    const titleElement = this.root.querySelector('.dimensions .size');
+                    if (titleElement) {
+                        titleElement.innerHTML += `&sdot; ${sizeKB} KB`;
+                    }
+                } catch (err) {
+                    console.error('Failed to get image size:', err);
+                }
             }
 
             showErr() {
@@ -143,7 +159,10 @@
                     onload="@showImg(this)"
                     onerror="@showErr()"
                 >
-                <div class="dimensions">[[@props.attr]]</div>
+                <div class="dimensions">
+                    [[@props.attr]]
+                    <span class="size"></span>
+                </div>
             </div>
         </div>
     </xmp>
