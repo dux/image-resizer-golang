@@ -15,6 +15,11 @@ A fast, efficient image resizing service built in Go with WebP support, intellig
 * ✅ **Domain Management** - Block/allow specific domains
 * ✅ **Statistics Dashboard** - Monitor usage and performance
 * ✅ **Environment Configuration** - Easy deployment setup
+- ✅ **Default Limit**: 1600 pixels (configurable via `MAX_SIZE`)
+- ✅ **Aspect Ratio**: Always preserved when enforcing limits
+- ✅ **Cache Optimization**: Original images resized to max size before caching
+- ✅ **WebP Storage**: Cached images stored as WebP for efficiency
+- ✅ **Automatic Enforcement**: Requested dimensions automatically clamped to max size
 
 ## Quick Start
 
@@ -106,70 +111,39 @@ Resize images with various parameters. The service supports two URL formats:
 #### New Format (Recommended)
 Parameters in the path, URL as query string:
 ```
-GET /r/w=300?https://example.com/image.jpg
-GET /r/w300?example.com/image.jpg         # Optional = sign, auto-prepends https://
-```
-
-#### Legacy Format
-Traditional query parameters:
-```
-GET /r?src=https://example.com/image.jpg&w=300
+GET /r/w300?example.com/image.jpg # Optional = sign, auto-prepends https://
 ```
 
 ### Resize Parameters
 
 #### Fixed Width
 ```
-# New format
-GET /r/w=300?https://example.com/image.jpg
 GET /r/w300?example.com/image.jpg
 
-# Legacy format
-GET /r?src=https://example.com/image.jpg&w=300
 ```
 Resize to 300px width, height scales proportionally.
 
 #### Fixed Height
 ```
-# New format
-GET /r/h=200?https://example.com/image.jpg
 GET /r/h200?example.com/image.jpg
-
-# Legacy format
-GET /r?src=https://example.com/image.jpg&h=200
 ```
 Resize to 200px height, width scales proportionally.
 
 #### Fit Within Bounds
 ```
-# New format
-GET /r/w=300&h=200?https://example.com/image.jpg
 GET /r/w=300x200?https://example.com/image.jpg
-
-# Legacy format
-GET /r?src=https://example.com/image.jpg&w=300&h=200
 ```
 Fit image within 300x200 constraints while maintaining aspect ratio.
 
 #### Crop to Exact Size
 ```
-# New format
-GET /r/c=300x200?https://example.com/image.jpg
 GET /r/c300x200?example.com/image.jpg
-
-# Legacy format
-GET /r?src=https://example.com/image.jpg&c=300x200
 ```
 Crop to exactly 300x200 with smart cropping (70% top focus).
 
 #### Square Crop
 ```
-# New format
-GET /r/c=300?https://example.com/image.jpg
 GET /r/c300?example.com/image.jpg
-
-# Legacy format
-GET /r?src=https://example.com/image.jpg&c=300
 ```
 Crop to 300x300 square.
 
@@ -250,32 +224,6 @@ Disabled domains receive HTTP 403 responses.
 ## Size Limits
 
 The service enforces a maximum size limit for both width and height:
-
-- **Default Limit**: 1600 pixels (configurable via `MAX_SIZE`)
-- **Aspect Ratio**: Always preserved when enforcing limits
-- **Cache Optimization**: Original images resized to max size before caching
-- **WebP Storage**: Cached images stored as WebP for efficiency
-- **Automatic Enforcement**: Requested dimensions automatically clamped to max size
-
-### Examples
-
-```bash
-# Request 2000px width (will be clamped to 1600px)
-GET /r?src=image.jpg&w=2000
-# Returns: 1600px width with proportional height
-
-# Request 3000x2000 crop (will be clamped to 1600x1600)
-GET /r?src=image.jpg&c=3000x2000
-# Returns: 1600x1067 crop (aspect ratio preserved)
-```
-
-## Performance
-
-- **WebP Encoding**: Reduces file sizes by 25-35%
-- **Smart Caching**: Eliminates repeated processing
-- **Concurrent Processing**: Goroutines for background tasks
-- **Memory Efficient**: Streaming image processing
-- **Size Enforcement**: Prevents memory exhaustion from large images
 
 ## Development
 
