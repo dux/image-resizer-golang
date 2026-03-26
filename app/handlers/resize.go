@@ -22,6 +22,7 @@ import (
 	"image-resize/app/database"
 
 	"github.com/disintegration/imaging"
+	"github.com/gen2brain/avif"
 	"github.com/kolesa-team/go-webp/encoder"
 	"github.com/kolesa-team/go-webp/webp"
 	_ "golang.org/x/image/webp" // Register WebP decoder
@@ -247,6 +248,27 @@ func enforceMaxSize(img image.Image) image.Image {
 func acceptsWebP(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
 	return strings.Contains(accept, "image/webp")
+}
+
+// Check if client accepts AVIF
+func acceptsAVIF(r *http.Request) bool {
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "image/avif")
+}
+
+// Helper function to encode image as AVIF
+func encodeAVIF(img image.Image, quality int) ([]byte, error) {
+	var buf bytes.Buffer
+	opts := avif.Options{
+		Quality:      quality,
+		QualityAlpha: quality,
+		Speed:        6, // balance between speed and compression (0=slowest/best, 10=fastest/worst)
+	}
+	err := avif.Encode(&buf, img, opts)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // ResizeParams holds the resize parameters
@@ -645,9 +667,13 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 
 	// params already parsed above
 	// Determine preferred output format based on client Accept header
+	// Priority: AVIF > WebP > original format
+	useAVIF := acceptsAVIF(r)
 	useWebP := acceptsWebP(r)
 	formatSuffix := "jpg"
-	if useWebP {
+	if useAVIF {
+		formatSuffix = "avif"
+	} else if useWebP {
 		formatSuffix = "webp"
 	}
 	cacheKey := params.CacheKey + "_" + formatSuffix
@@ -686,9 +712,9 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add headers to avoid rate limiting (no AVIF - Go can't decode it)
+	// Add headers to avoid rate limiting
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0")
-	req.Header.Set("Accept", "image/webp,image/png,image/jpeg,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+	req.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("DNT", "1")
@@ -774,14 +800,43 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	// Resize if needed
 	img = resizeImage(img, params)
 
-	// Always try to encode as WebP first (except for GIF which needs animation support)
+	// Always try to encode as AVIF first (best compression), then WebP, then original format
+	// GIF is excluded from conversion to preserve animation potential
 	var outputData []byte
 	var mimeType string
 	var outputFormat string
 	var buf bytes.Buffer
 
-	// Try WebP encoding for non-GIF formats when client supports it
-	if format != "gif" && useWebP {
+	if format != "gif" && useAVIF {
+		// Try AVIF encoding (best compression, preferred)
+		log.Printf("Attempting AVIF encoding for format: %s", format)
+		data, err := encodeAVIF(img, WebPQuality)
+		if err == nil {
+			log.Printf("AVIF encoding successful, output size: %.1f KB", float64(len(data))/1024.0)
+			outputData = data
+			mimeType = "image/avif"
+			outputFormat = "avif"
+		} else {
+			log.Printf("AVIF encoding failed, trying WebP fallback: %v", err)
+			// Fall through to WebP
+			if useWebP {
+				data, err := encodeWebP(img, WebPQuality)
+				if err == nil {
+					outputData = data
+					mimeType = "image/webp"
+					outputFormat = "webp"
+				} else {
+					log.Printf("WebP encoding also failed, falling back to original format: %v", err)
+					encodeFallback(format, img, &buf, &mimeType, &outputFormat)
+					outputData = buf.Bytes()
+				}
+			} else {
+				encodeFallback(format, img, &buf, &mimeType, &outputFormat)
+				outputData = buf.Bytes()
+			}
+		}
+	} else if format != "gif" && useWebP {
+		// Try WebP encoding for non-GIF formats when client supports it
 		log.Printf("Attempting WebP encoding for format: %s", format)
 		data, err := encodeWebP(img, WebPQuality)
 		if err == nil {
@@ -795,7 +850,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 			outputData = buf.Bytes()
 		}
 	} else if format != "gif" {
-		// Client doesn't support WebP - encode in original format
+		// Client doesn't support WebP or AVIF - encode in original format
 		encodeFallback(format, img, &buf, &mimeType, &outputFormat)
 		outputData = buf.Bytes()
 	} else {

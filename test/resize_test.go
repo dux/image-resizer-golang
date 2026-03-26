@@ -21,6 +21,7 @@ import (
 	"image-resize/app/database"
 	"image-resize/app/handlers"
 
+	"github.com/gen2brain/avif"
 	"github.com/kolesa-team/go-webp/encoder"
 	"github.com/kolesa-team/go-webp/webp"
 	_ "golang.org/x/image/webp"
@@ -36,6 +37,7 @@ func imageServer() *httptest.Server {
 		"/test.png":  {createTestPNG(200, 150), "image/png"},
 		"/test.gif":  {createTestGIF(200, 150), "image/gif"},
 		"/test.webp": {createTestWebP(200, 150), "image/webp"},
+		"/test.avif": {createTestAVIF(200, 150), "image/avif"},
 		"/test.svg": {[]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150">
 			<rect width="200" height="150" fill="red"/>
 		</svg>`), "image/svg+xml"},
@@ -93,16 +95,25 @@ func TestResizeNewFormat(t *testing.T) {
 		name            string
 		path            string
 		query           string
-		acceptWebP      bool
+		accept          string
 		expectedStatus  int
 		expectedType    string
 		expectImmutable bool
 	}{
 		{
+			name:            "width resize avif client",
+			path:            "/r/w100",
+			query:           ts.URL + "/test.jpeg",
+			accept:          "image/avif,image/webp,image/*",
+			expectedStatus:  http.StatusOK,
+			expectedType:    "image/avif",
+			expectImmutable: true,
+		},
+		{
 			name:            "width resize webp client",
 			path:            "/r/w100",
 			query:           ts.URL + "/test.jpeg",
-			acceptWebP:      true,
+			accept:          "image/webp,image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/webp",
 			expectImmutable: true,
@@ -111,16 +122,25 @@ func TestResizeNewFormat(t *testing.T) {
 			name:            "width resize non-webp client gets jpeg",
 			path:            "/r/w100",
 			query:           ts.URL + "/test.jpeg",
-			acceptWebP:      false,
+			accept:          "image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/jpeg",
 			expectImmutable: true,
 		},
 		{
-			name:            "crop resize",
+			name:            "crop resize avif",
 			path:            "/r/c100x80",
 			query:           ts.URL + "/test.jpeg",
-			acceptWebP:      true,
+			accept:          "image/avif,image/webp,image/*",
+			expectedStatus:  http.StatusOK,
+			expectedType:    "image/avif",
+			expectImmutable: true,
+		},
+		{
+			name:            "crop resize webp",
+			path:            "/r/c100x80",
+			query:           ts.URL + "/test.jpeg",
+			accept:          "image/webp,image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/webp",
 			expectImmutable: true,
@@ -129,7 +149,7 @@ func TestResizeNewFormat(t *testing.T) {
 			name:            "height resize",
 			path:            "/r/h100",
 			query:           ts.URL + "/test.jpeg",
-			acceptWebP:      true,
+			accept:          "image/webp,image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/webp",
 			expectImmutable: true,
@@ -138,16 +158,16 @@ func TestResizeNewFormat(t *testing.T) {
 			name:            "square crop",
 			path:            "/r/c80",
 			query:           ts.URL + "/test.png",
-			acceptWebP:      true,
+			accept:          "image/webp,image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/webp",
 			expectImmutable: true,
 		},
 		{
-			name:            "gif stays gif",
+			name:            "gif stays gif even with avif",
 			path:            "/r/w100",
 			query:           ts.URL + "/test.gif",
-			acceptWebP:      true,
+			accept:          "image/avif,image/webp,image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/gif",
 			expectImmutable: true,
@@ -156,7 +176,7 @@ func TestResizeNewFormat(t *testing.T) {
 			name:            "svg passthrough",
 			path:            "/r/w100",
 			query:           ts.URL + "/test.svg",
-			acceptWebP:      true,
+			accept:          "image/avif,image/webp,image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/svg+xml",
 			expectImmutable: true,
@@ -165,9 +185,27 @@ func TestResizeNewFormat(t *testing.T) {
 			name:            "png non-webp client gets png",
 			path:            "/r/w100",
 			query:           ts.URL + "/test.png",
-			acceptWebP:      false,
+			accept:          "image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/png",
+			expectImmutable: true,
+		},
+		{
+			name:            "avif source decoded and re-encoded as avif",
+			path:            "/r/w100",
+			query:           ts.URL + "/test.avif",
+			accept:          "image/avif,image/webp,image/*",
+			expectedStatus:  http.StatusOK,
+			expectedType:    "image/avif",
+			expectImmutable: true,
+		},
+		{
+			name:            "avif source re-encoded as webp when no avif accept",
+			path:            "/r/w100",
+			query:           ts.URL + "/test.avif",
+			accept:          "image/webp,image/*",
+			expectedStatus:  http.StatusOK,
+			expectedType:    "image/webp",
 			expectImmutable: true,
 		},
 	}
@@ -175,11 +213,7 @@ func TestResizeNewFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", tt.path+"?"+tt.query, nil)
-			if tt.acceptWebP {
-				req.Header.Set("Accept", "image/webp,image/*")
-			} else {
-				req.Header.Set("Accept", "image/*")
-			}
+			req.Header.Set("Accept", tt.accept)
 			rec := httptest.NewRecorder()
 			handlers.ResizeHandler(rec, req)
 
@@ -223,7 +257,7 @@ func TestWebPCacheKeySeparation(t *testing.T) {
 
 	url := ts.URL + "/test.jpeg"
 
-	// Request 1: WebP client
+	// Request 1: WebP client (not AVIF)
 	req1 := httptest.NewRequest("GET", "/r/w100?"+url, nil)
 	req1.Header.Set("Accept", "image/webp,image/*")
 	rec1 := httptest.NewRecorder()
@@ -248,6 +282,77 @@ func TestWebPCacheKeySeparation(t *testing.T) {
 	}
 	if ct2 != "image/jpeg" {
 		t.Errorf("non-webp client should get image/jpeg, got %s", ct2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AVIF vs WebP vs plain -> separate cache keys
+// ---------------------------------------------------------------------------
+
+func TestAVIFCacheKeySeparation(t *testing.T) {
+	ts := imageServer()
+	defer ts.Close()
+
+	url := ts.URL + "/test.jpeg"
+
+	// Request 1: AVIF client
+	req1 := httptest.NewRequest("GET", "/r/w90?"+url, nil)
+	req1.Header.Set("Accept", "image/avif,image/webp,image/*")
+	rec1 := httptest.NewRecorder()
+	handlers.ResizeHandler(rec1, req1)
+
+	if rec1.Header().Get("Content-Type") != "image/avif" {
+		t.Fatalf("avif client should get image/avif, got %s", rec1.Header().Get("Content-Type"))
+	}
+
+	// Give cache goroutine time to write
+	time.Sleep(100 * time.Millisecond)
+
+	// Request 2: WebP client (same image, same size)
+	req2 := httptest.NewRequest("GET", "/r/w90?"+url, nil)
+	req2.Header.Set("Accept", "image/webp,image/*")
+	rec2 := httptest.NewRecorder()
+	handlers.ResizeHandler(rec2, req2)
+
+	ct2 := rec2.Header().Get("Content-Type")
+	if ct2 != "image/webp" {
+		t.Errorf("webp client should get image/webp, got %s", ct2)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Request 3: Plain client (no avif, no webp)
+	req3 := httptest.NewRequest("GET", "/r/w90?"+url, nil)
+	req3.Header.Set("Accept", "image/*")
+	rec3 := httptest.NewRecorder()
+	handlers.ResizeHandler(rec3, req3)
+
+	ct3 := rec3.Header().Get("Content-Type")
+	if ct3 != "image/jpeg" {
+		t.Errorf("plain client should get image/jpeg, got %s", ct3)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AVIF priority: AVIF > WebP when client supports both
+// ---------------------------------------------------------------------------
+
+func TestAVIFPriorityOverWebP(t *testing.T) {
+	ts := imageServer()
+	defer ts.Close()
+
+	// Client that supports both AVIF and WebP should get AVIF
+	req := httptest.NewRequest("GET", "/r/w100?"+ts.URL+"/test.jpeg", nil)
+	req.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,*/*")
+	rec := httptest.NewRecorder()
+	handlers.ResizeHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if ct != "image/avif" {
+		t.Errorf("client supporting both AVIF and WebP should get AVIF, got %s", ct)
 	}
 }
 
@@ -644,29 +749,32 @@ func TestFormatHandlingWithAcceptHeader(t *testing.T) {
 	defer ts.Close()
 
 	tests := []struct {
-		name       string
-		file       string
-		acceptWebP bool
-		wantType   string
+		name     string
+		file     string
+		accept   string
+		wantType string
 	}{
-		{"jpeg+webp", "/test.jpeg", true, "image/webp"},
-		{"jpeg-nowebp", "/test.jpeg", false, "image/jpeg"},
-		{"png+webp", "/test.png", true, "image/webp"},
-		{"png-nowebp", "/test.png", false, "image/png"},
-		{"webp+webp", "/test.webp", true, "image/webp"},
-		{"webp-nowebp", "/test.webp", false, "image/jpeg"}, // webp decoded then re-encoded as jpeg fallback
-		{"gif+webp", "/test.gif", true, "image/gif"},
-		{"gif-nowebp", "/test.gif", false, "image/gif"},
+		// AVIF client (prefers AVIF)
+		{"jpeg+avif", "/test.jpeg", "image/avif,image/webp,image/*", "image/avif"},
+		{"png+avif", "/test.png", "image/avif,image/webp,image/*", "image/avif"},
+		{"avif+avif", "/test.avif", "image/avif,image/webp,image/*", "image/avif"},
+		{"gif+avif stays gif", "/test.gif", "image/avif,image/webp,image/*", "image/gif"},
+		// WebP client (no AVIF)
+		{"jpeg+webp", "/test.jpeg", "image/webp,image/*", "image/webp"},
+		{"png+webp", "/test.png", "image/webp,image/*", "image/webp"},
+		{"webp+webp", "/test.webp", "image/webp,image/*", "image/webp"},
+		{"gif+webp", "/test.gif", "image/webp,image/*", "image/gif"},
+		// No modern format support
+		{"jpeg-nowebp", "/test.jpeg", "image/*", "image/jpeg"},
+		{"png-nowebp", "/test.png", "image/*", "image/png"},
+		{"webp-nowebp", "/test.webp", "image/*", "image/jpeg"}, // webp decoded then re-encoded as jpeg fallback
+		{"gif-nowebp", "/test.gif", "image/*", "image/gif"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/r/w100?"+ts.URL+tt.file, nil)
-			if tt.acceptWebP {
-				req.Header.Set("Accept", "image/webp,image/*")
-			} else {
-				req.Header.Set("Accept", "image/*")
-			}
+			req.Header.Set("Accept", tt.accept)
 			rec := httptest.NewRecorder()
 			handlers.ResizeHandler(rec, req)
 
@@ -717,8 +825,8 @@ func TestResizeHandlerWithStaticFiles(t *testing.T) {
 						}
 						if tf.format != "svg" && tf.format != "gif" {
 							ct := rec.Header().Get("Content-Type")
-							if ct != "image/webp" {
-								t.Errorf("expected Content-Type image/webp, got %s", ct)
+							if ct != "image/avif" {
+								t.Errorf("expected Content-Type image/avif, got %s", ct)
 							}
 						}
 					},
@@ -746,7 +854,7 @@ func TestResizeHandlerWithStaticFiles(t *testing.T) {
 			for _, tc := range testCases {
 				t.Run(tc.name, func(t *testing.T) {
 					req := httptest.NewRequest("GET", tc.path+"?"+ts.URL+"/"+tf.filename, nil)
-					req.Header.Set("Accept", "image/webp,image/*")
+					req.Header.Set("Accept", "image/avif,image/webp,image/*")
 					rec := httptest.NewRecorder()
 					handlers.ResizeHandler(rec, req)
 					tc.check(rec)
@@ -861,16 +969,17 @@ func TestResizeHandlerFormatHandling(t *testing.T) {
 		file     string
 		wantType string
 	}{
-		{"JPEG to WebP", "/test.jpeg", "image/webp"},
-		{"PNG to WebP", "/test.png", "image/webp"},
+		{"JPEG to AVIF", "/test.jpeg", "image/avif"},
+		{"PNG to AVIF", "/test.png", "image/avif"},
 		{"GIF preserved", "/test.gif", "image/gif"},
-		{"WebP to WebP", "/test.webp", "image/webp"},
+		{"WebP to AVIF", "/test.webp", "image/avif"},
+		{"AVIF to AVIF", "/test.avif", "image/avif"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/r/w100?"+ts.URL+tt.file, nil)
-			req.Header.Set("Accept", "image/webp,image/*")
+			req.Header.Set("Accept", "image/avif,image/webp,image/*")
 			rec := httptest.NewRecorder()
 			handlers.ResizeHandler(rec, req)
 
@@ -897,7 +1006,7 @@ func TestResizeCacheHit(t *testing.T) {
 
 	// First request -> MISS
 	req1 := httptest.NewRequest("GET", "/r/w80?"+url, nil)
-	req1.Header.Set("Accept", "image/webp,image/*")
+	req1.Header.Set("Accept", "image/avif,image/webp,image/*")
 	rec1 := httptest.NewRecorder()
 	handlers.ResizeHandler(rec1, req1)
 	if rec1.Code != http.StatusOK {
@@ -912,7 +1021,7 @@ func TestResizeCacheHit(t *testing.T) {
 
 	// Second request -> HIT
 	req2 := httptest.NewRequest("GET", "/r/w80?"+url, nil)
-	req2.Header.Set("Accept", "image/webp,image/*")
+	req2.Header.Set("Accept", "image/avif,image/webp,image/*")
 	rec2 := httptest.NewRecorder()
 	handlers.ResizeHandler(rec2, req2)
 	if rec2.Code != http.StatusOK {
@@ -942,14 +1051,14 @@ func TestResizeCacheBypass(t *testing.T) {
 
 	// Prime cache
 	req1 := httptest.NewRequest("GET", "/r/w70?"+url, nil)
-	req1.Header.Set("Accept", "image/webp,image/*")
+	req1.Header.Set("Accept", "image/avif,image/webp,image/*")
 	rec1 := httptest.NewRecorder()
 	handlers.ResizeHandler(rec1, req1)
 	time.Sleep(200 * time.Millisecond)
 
 	// Request with no-cache -> BYPASS
 	req2 := httptest.NewRequest("GET", "/r/w70?"+url, nil)
-	req2.Header.Set("Accept", "image/webp,image/*")
+	req2.Header.Set("Accept", "image/avif,image/webp,image/*")
 	req2.Header.Set("Cache-Control", "no-cache")
 	rec2 := httptest.NewRecorder()
 	handlers.ResizeHandler(rec2, req2)
@@ -1000,6 +1109,13 @@ func createTestWebP(width, height int) []byte {
 	return buf.Bytes()
 }
 
+func createTestAVIF(width, height int) []byte {
+	img := createColoredImage(width, height)
+	var buf bytes.Buffer
+	avif.Encode(&buf, img, avif.Options{Quality: 60, QualityAlpha: 60, Speed: 10})
+	return buf.Bytes()
+}
+
 func createColoredImage(width, height int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for y := 0; y < height; y++ {
@@ -1027,7 +1143,7 @@ func BenchmarkResizeHandler(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest("GET", "/r/w200?"+url, nil)
-		req.Header.Set("Accept", "image/webp,image/*")
+		req.Header.Set("Accept", "image/avif,image/webp,image/*")
 		rec := httptest.NewRecorder()
 		handlers.ResizeHandler(rec, req)
 		if rec.Code != http.StatusOK {
@@ -1044,7 +1160,7 @@ func BenchmarkResizeHandlerCrop(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest("GET", "/r/c200x200?"+url, nil)
-		req.Header.Set("Accept", "image/webp,image/*")
+		req.Header.Set("Accept", "image/avif,image/webp,image/*")
 		rec := httptest.NewRecorder()
 		handlers.ResizeHandler(rec, req)
 		if rec.Code != http.StatusOK {
