@@ -2,8 +2,41 @@ package handlers
 
 import (
 	"html/template"
+	"log"
 	"net/http"
 )
+
+// Pre-parsed templates (initialized once at startup)
+var (
+	homeTemplate   *template.Template
+	demoTemplate   *template.Template
+	configTemplate *template.Template
+	logsTemplate   *template.Template
+)
+
+func init() {
+	var err error
+
+	homeTemplate, err = template.ParseFiles("templates/layout.html", "templates/home.html")
+	if err != nil {
+		log.Printf("Warning: failed to parse home template: %v", err)
+	}
+
+	demoTemplate, err = template.ParseFiles("templates/layout.html", "templates/demo.html")
+	if err != nil {
+		log.Printf("Warning: failed to parse demo template: %v", err)
+	}
+
+	configTemplate, err = template.ParseFiles("templates/layout.html", "templates/config.html")
+	if err != nil {
+		log.Printf("Warning: failed to parse config template: %v", err)
+	}
+
+	logsTemplate, err = template.ParseFiles("templates/layout.html", "templates/logs.html")
+	if err != nil {
+		log.Printf("Warning: failed to parse logs template: %v", err)
+	}
+}
 
 func HomeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -11,9 +44,14 @@ func HomeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmpl, err := template.ParseFiles("templates/layout.html", "templates/home.html")
-	if err != nil {
-		http.Error(w, "Failed to load template", http.StatusInternalServerError)
+	// Only serve the home page for the exact root path
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	if homeTemplate == nil {
+		http.Error(w, "Template not available", http.StatusInternalServerError)
 		return
 	}
 
@@ -23,7 +61,7 @@ func HomeHandler(w http.ResponseWriter, r *http.Request) {
 		CurrentPath: r.URL.Path,
 	}
 
-	err = tmpl.Execute(w, data)
+	err := homeTemplate.Execute(w, data)
 	if err != nil {
 		http.Error(w, "Failed to render template", http.StatusInternalServerError)
 		return

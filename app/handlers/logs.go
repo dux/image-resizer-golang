@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"html/template"
 	"io"
 	"log"
 	"net/http"
@@ -32,14 +31,14 @@ type LogWriter struct {
 func (w *LogWriter) Write(p []byte) (n int, err error) {
 	// Write to original output
 	n, err = w.output.Write(p)
-	
+
 	// Add to buffer
 	message := string(p)
 	logBuffer.Add(message)
-	
+
 	// Broadcast to all connected WebSocket clients
 	broadcastLog(message)
-	
+
 	return n, err
 }
 
@@ -47,7 +46,7 @@ func (w *LogWriter) Write(p []byte) (n int, err error) {
 func (lb *LogBuffer) Add(message string) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	
+
 	// Split by newlines to handle multi-line logs
 	lines := strings.Split(strings.TrimRight(message, "\n"), "\n")
 	for _, line := range lines {
@@ -65,7 +64,7 @@ func (lb *LogBuffer) Add(message string) {
 func (lb *LogBuffer) GetAll() []string {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
-	
+
 	result := make([]string, len(lb.messages))
 	copy(result, lb.messages)
 	return result
@@ -92,7 +91,7 @@ func broadcastLog(message string) {
 		clientsCopy = append(clientsCopy, client)
 	}
 	clientsMu.RUnlock()
-	
+
 	var toRemove []*websocket.Conn
 	for _, client := range clientsCopy {
 		err := client.WriteMessage(websocket.TextMessage, []byte(message))
@@ -101,7 +100,7 @@ func broadcastLog(message string) {
 			toRemove = append(toRemove, client)
 		}
 	}
-	
+
 	// Remove disconnected clients
 	if len(toRemove) > 0 {
 		clientsMu.Lock()
@@ -114,13 +113,12 @@ func broadcastLog(message string) {
 
 // LogsHandler serves the logs page
 func LogsHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.ParseFiles("templates/layout.html", "templates/logs.html")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if logsTemplate == nil {
+		http.Error(w, "Template not available", http.StatusInternalServerError)
 		return
 	}
 
-	if err := tmpl.Execute(w, nil); err != nil {
+	if err := logsTemplate.Execute(w, nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -128,6 +126,13 @@ func LogsHandler(w http.ResponseWriter, r *http.Request) {
 
 // LogsWebSocketHandler handles WebSocket connections for live logs
 func LogsWebSocketHandler(w http.ResponseWriter, r *http.Request) {
+	// Verify BasicAuth before upgrading to WebSocket
+	if !checkBasicAuth(r) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
@@ -164,13 +169,13 @@ func LogsWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 func InitLogCapture() {
 	// Create a multi-writer that writes to both stdout and our buffer
 	multiWriter := &LogWriter{output: log.Writer()}
-	
+
 	// Create a new logger that uses our multi-writer
 	logger := log.New(multiWriter, "", log.LstdFlags)
-	
+
 	// Set as default logger
 	log.SetOutput(logger.Writer())
 	log.SetFlags(log.LstdFlags)
-	
+
 	// Note: We keep the original stdout as is, but logs via log package will be captured
 }

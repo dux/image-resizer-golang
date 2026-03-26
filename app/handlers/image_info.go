@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"image-resize/app/models"
 )
@@ -19,7 +21,16 @@ func ImageInfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	img, err := models.NewImage(imagePath)
+	// Prevent path traversal - only allow files from the static directory
+	cleanPath := filepath.Clean(imagePath)
+	if strings.Contains(cleanPath, "..") || filepath.IsAbs(cleanPath) {
+		http.Error(w, "Invalid image path", http.StatusBadRequest)
+		return
+	}
+	// Restrict to static/ directory only
+	safePath := filepath.Join("static", cleanPath)
+
+	img, err := models.NewImage(safePath)
 	if err != nil {
 		http.Error(w, "Failed to read image: "+err.Error(), http.StatusBadRequest)
 		return

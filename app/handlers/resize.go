@@ -33,7 +33,20 @@ var WebPQuality int
 // MaxSize is the maximum width/height allowed for images
 var MaxSize int
 
+// Shared HTTP client for fetching remote images
+var httpClient *http.Client
+
 func init() {
+	// Initialize shared HTTP client with connection pooling
+	httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+
 	// Read QUALITY from environment or use default
 	qualityStr := os.Getenv("QUALITY")
 	if qualityStr != "" {
@@ -72,13 +85,31 @@ func encodeWebP(img image.Image, quality int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var buf bytes.Buffer
 	err = webp.Encode(&buf, img, options)
 	if err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// encodeFallback encodes image in its original format (non-WebP fallback)
+func encodeFallback(format string, img image.Image, buf *bytes.Buffer, mimeType *string, outputFormat *string) {
+	switch format {
+	case "jpeg", "jpg":
+		*mimeType = "image/jpeg"
+		*outputFormat = "jpeg"
+		jpeg.Encode(buf, img, &jpeg.Options{Quality: WebPQuality})
+	case "png":
+		*mimeType = "image/png"
+		*outputFormat = "png"
+		png.Encode(buf, img)
+	default:
+		*mimeType = "image/jpeg"
+		*outputFormat = "jpeg"
+		jpeg.Encode(buf, img, &jpeg.Options{Quality: WebPQuality})
+	}
 }
 
 // enforceMaxSize ensures image dimensions don't exceed MaxSize while preserving aspect ratio
@@ -364,13 +395,13 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 			// Create a fake request to reuse parseResizeParams
 			fakeReq := &http.Request{URL: &url.URL{}}
 			fakeQuery := url.Values{}
-			
+
 			// Parse each parameter
 			for _, param := range strings.Split(paramParts[0], "&") {
 				if param == "" {
 					continue
 				}
-				
+
 				// Check if parameter has = sign
 				if strings.Contains(param, "=") {
 					parts := strings.SplitN(param, "=", 2)
@@ -383,7 +414,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 						// Extract the parameter type (first character) and value
 						paramType := param[0:1]
 						paramValue := param[1:]
-						
+
 						// Validate that the value is numeric (with optional 'x' for crop)
 						if paramType == "w" || paramType == "h" || paramType == "c" {
 							fakeQuery.Set(paramType, paramValue)
@@ -392,7 +423,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			fakeReq.URL.RawQuery = fakeQuery.Encode()
-			
+
 			var err error
 			params, err = parseResizeParams(fakeReq)
 			if err != nil {
@@ -458,21 +489,13 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// params already parsed above
-
-	// For backward compatibility with the database cache
-	// We'll use the width value for simple width-only resizes
-	cacheWidth := params.Width
-	if params.Height > 0 || params.CropMode {
-		// For new formats, we'll use a hash of the cache key as width
-		// This is a workaround - ideally we'd update the database schema
-		// Use a simple hash to create a unique cache identifier
-		hash := 0
-		for _, c := range params.CacheKey {
-			hash = hash*31 + int(c)
-		}
-		// Ensure it's positive and within a reasonable range
-		cacheWidth = (hash&0x7FFFFFFF)%100000 + 100000 // Range: 100000-199999
+	// Determine preferred output format based on client Accept header
+	useWebP := acceptsWebP(r)
+	formatSuffix := "jpg"
+	if useWebP {
+		formatSuffix = "webp"
 	}
+	cacheKey := params.CacheKey + "_" + formatSuffix
 
 	// Check if client wants fresh content (force refresh)
 	skipCache := false
@@ -485,14 +508,15 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Check cache first (unless client requested fresh content)
 	if !skipCache {
-		cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheWidth)
+		cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheKey)
 		if err != nil {
 			log.Printf("Error checking cache: %v", err)
 		}
 		if cachedData != nil {
 			log.Printf("Serving cached image for %s (params: %s)", srcURL, params.CacheKey)
 			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
+			w.Header().Set("Content-Length", strconv.Itoa(len(cachedData)))
+			w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
 			w.Header().Set("X-Cache", "HIT")
 			w.Header().Set("X-Info", fmt.Sprintf("from-cache; params=%s; format=%s", params.CacheKey, responseFormat))
 			w.Write(cachedData)
@@ -508,11 +532,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	} else if isDisabled {
 		http.Error(w, "Domain '"+domain+"' is forbidden from using this resize service", http.StatusForbidden)
 		return
-	}
-
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
 	}
 
 	// Create request with headers
@@ -531,13 +550,16 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		// Return error SVG
+		svgData := generateErrorSVG(params.Width, params.Height)
 		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-cache, max-age=60")
+		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
 		w.Header().Set("X-Cache", "MISS")
 		w.Header().Set("X-Info", fmt.Sprintf("error; fetch-failed; %v", err))
-		w.Write(generateErrorSVG(params.Width, params.Height))
+		w.Write(svgData)
 		return
 	}
 	defer resp.Body.Close()
@@ -545,10 +567,13 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
 		// Return error SVG
+		svgData := generateErrorSVG(params.Width, params.Height)
 		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-cache, max-age=60")
+		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
 		w.Header().Set("X-Cache", "MISS")
 		w.Header().Set("X-Info", fmt.Sprintf("error; fetch-failed; status=%d", resp.StatusCode))
-		w.Write(generateErrorSVG(params.Width, params.Height))
+		w.Write(svgData)
 		return
 	}
 
@@ -556,19 +581,25 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		// Return error SVG
+		svgData := generateErrorSVG(params.Width, params.Height)
 		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-cache, max-age=60")
+		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
 		w.Header().Set("X-Cache", "MISS")
 		w.Header().Set("X-Info", fmt.Sprintf("error; read-failed; %v", err))
-		w.Write(generateErrorSVG(params.Width, params.Height))
+		w.Write(svgData)
 		return
 	}
 
 	if len(bodyBytes) == 0 {
 		// Return error SVG
+		svgData := generateErrorSVG(params.Width, params.Height)
 		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-cache, max-age=60")
+		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
 		w.Header().Set("X-Cache", "MISS")
 		w.Header().Set("X-Info", "error; empty-data")
-		w.Write(generateErrorSVG(params.Width, params.Height))
+		w.Write(svgData)
 		return
 	}
 
@@ -583,10 +614,13 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	img, format, err := image.Decode(bytes.NewReader(bodyBytes))
 	if err != nil {
 		// Return error SVG
+		svgData := generateErrorSVG(params.Width, params.Height)
 		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-cache, max-age=60")
+		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
 		w.Header().Set("X-Cache", "MISS")
 		w.Header().Set("X-Info", fmt.Sprintf("error; decode-failed; %v", err))
-		w.Write(generateErrorSVG(params.Width, params.Height))
+		w.Write(svgData)
 		return
 	}
 
@@ -601,8 +635,8 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	var outputFormat string
 	var buf bytes.Buffer
 
-	// Try WebP encoding for all formats except GIF
-	if format != "gif" {
+	// Try WebP encoding for non-GIF formats when client supports it
+	if format != "gif" && useWebP {
 		log.Printf("Attempting WebP encoding for format: %s", format)
 		data, err := encodeWebP(img, WebPQuality)
 		if err == nil {
@@ -612,25 +646,16 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 			outputFormat = "webp"
 		} else {
 			log.Printf("WebP encoding failed, falling back to original format: %v", err)
-			// Fallback to original format
-			switch format {
-			case "jpeg", "jpg":
-				mimeType = "image/jpeg"
-				outputFormat = "jpeg"
-				jpeg.Encode(&buf, img, &jpeg.Options{Quality: WebPQuality})
-			case "png":
-				mimeType = "image/png"
-				outputFormat = "png"
-				png.Encode(&buf, img)
-			default:
-				mimeType = "image/jpeg"
-				outputFormat = "jpeg"
-				jpeg.Encode(&buf, img, &jpeg.Options{Quality: WebPQuality})
-			}
+			encodeFallback(format, img, &buf, &mimeType, &outputFormat)
 			outputData = buf.Bytes()
 		}
+	} else if format != "gif" {
+		// Client doesn't support WebP - encode in original format
+		encodeFallback(format, img, &buf, &mimeType, &outputFormat)
+		outputData = buf.Bytes()
 	} else {
-		// Keep GIF as GIF to preserve animation
+		// GIF: note that animation is NOT preserved - only the first frame is kept
+		// image.Decode only decodes the first frame of animated GIFs
 		mimeType = "image/gif"
 		outputFormat = "gif"
 		gif.Encode(&buf, img, &gif.Options{})
@@ -640,8 +665,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	// Cache resized image if any transformation was applied
 	if params.Width > 0 || params.Height > 0 {
 		go func() {
-			// Pass nil for originalData to avoid storing raw image
-			if err := database.CacheImage(srcURL, cacheWidth, nil, outputData, mimeType, outputFormat); err != nil {
+			if err := database.CacheImage(srcURL, cacheKey, outputData, mimeType, outputFormat); err != nil {
 				log.Printf("Failed to cache resized image: %v", err)
 			}
 		}()
@@ -649,7 +673,8 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Send response
 	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
+	w.Header().Set("Content-Length", strconv.Itoa(len(outputData)))
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
 	if skipCache {
 		w.Header().Set("X-Cache", "BYPASS")
 	} else {
@@ -660,12 +685,11 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSVG(w http.ResponseWriter, srcURL string, svgData []byte, width int) {
-	// Don't cache SVG files to save space
-
 	// Return SVG without manipulation
 	w.Header().Set("Content-Type", "image/svg+xml")
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", MaxAge))
+	w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
 	w.Header().Set("X-Cache", "MISS")
-	w.Header().Set("X-Info", fmt.Sprintf("fresh-fetch; format=svg; no-manipulation"))
+	w.Header().Set("X-Info", "fresh-fetch; format=svg; no-manipulation")
 	w.Write(svgData)
 }

@@ -3,7 +3,6 @@ package handlers
 import (
 	"bufio"
 	"fmt"
-	"html/template"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -18,9 +17,8 @@ type DemoPageData struct {
 }
 
 func DemoHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.ParseFiles("templates/layout.html", "templates/demo.html")
-	if err != nil {
-		http.Error(w, "Error loading template", http.StatusInternalServerError)
+	if demoTemplate == nil {
+		http.Error(w, "Template not available", http.StatusInternalServerError)
 		return
 	}
 
@@ -39,7 +37,7 @@ func DemoHandler(w http.ResponseWriter, r *http.Request) {
 	data.EncodedURL = strings.Trim(url.QueryEscape(src), `"'`)
 
 	w.Header().Set("Content-Type", "text/html")
-	tmpl.Execute(w, data)
+	demoTemplate.Execute(w, data)
 }
 
 func checkImageAvailable(url string) bool {
@@ -50,7 +48,7 @@ func checkImageAvailable(url string) bool {
 		},
 	}
 
-	resp, err := client.Get(url)
+	resp, err := client.Head(url)
 	if err != nil {
 		return false
 	}
@@ -86,7 +84,6 @@ func getRandomImage() string {
 		return ""
 	}
 
-	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(images), func(i, j int) {
 		images[i], images[j] = images[j], images[i]
 	})

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"image-resize/app/database"
 	"image-resize/app/handlers"
@@ -15,7 +19,7 @@ import (
 func main() {
 	// Initialize log capturing before anything else
 	handlers.InitLogCapture()
-	
+
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found")
@@ -47,7 +51,7 @@ func main() {
 	mux.HandleFunc("/logs", handlers.BasicAuth(handlers.LogsHandler))
 	mux.HandleFunc("/ws/logs", handlers.LogsWebSocketHandler)
 	mux.HandleFunc("/favicon.ico", handlers.FaviconHandler)
-	
+
 	// Serve static files
 	fs := http.FileServer(http.Dir("static"))
 	mux.Handle("/static/", http.StripPrefix("/static/", fs))
@@ -57,9 +61,40 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	fmt.Printf("Server starting on http://localhost:%s\n", port)
 
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		log.Fatal(err)
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
 	}
+
+	// Graceful shutdown on SIGINT/SIGTERM
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		fmt.Printf("Server starting on http://localhost:%s\n", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	<-done
+	log.Println("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
+
+	// Close databases
+	if database.DB != nil {
+		database.DB.Close()
+	}
+	if database.RefererDB != nil {
+		database.RefererDB.Close()
+	}
+
+	log.Println("Server stopped")
 }

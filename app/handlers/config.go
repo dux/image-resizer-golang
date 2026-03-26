@@ -1,280 +1,298 @@
 package handlers
 
 import (
-  "crypto/subtle"
-  "encoding/json"
-  "fmt"
-  "html/template"
-  "io"
-  "net/http"
-  "os"
-  "path/filepath"
-  "strconv"
-  "strings"
-  "log"
+	"crypto/subtle"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
 
-  "image-resize/app/database"
+	"image-resize/app/database"
 )
 
 // MaxAge is the cache max-age in seconds
 var MaxAge int
 
+// checkBasicAuth verifies BasicAuth credentials without sending a response.
+// Returns true if credentials are valid. Used for WebSocket auth checks.
+func checkBasicAuth(r *http.Request) bool {
+	userAndPass := os.Getenv("HTTP_USER_AND_PASS")
+	if userAndPass == "" {
+		userAndPass = "ir:ir"
+	}
+
+	parts := strings.SplitN(userAndPass, ":", 2)
+	if len(parts) != 2 {
+		parts = []string{"ir", "ir"}
+	}
+
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+
+	userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(parts[0])) == 1
+	passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(parts[1])) == 1
+	return userMatch && passMatch
+}
+
 // BasicAuth middleware for protecting endpoints
 func BasicAuth(handler http.HandlerFunc) http.HandlerFunc {
-  return func(w http.ResponseWriter, r *http.Request) {
-    // Get credentials from environment or use defaults
-    userAndPass := os.Getenv("HTTP_USER_AND_PASS")
-    if userAndPass == "" {
-      userAndPass = "ir:ir"
-    }
-    
-    // Split into username and password
-    parts := strings.SplitN(userAndPass, ":", 2)
-    if len(parts) != 2 {
-      log.Printf("Invalid HTTP_USER_AND_PASS format, using default 'ir:ir'")
-      parts = []string{"ir", "ir"}
-    }
-    expectedUser := parts[0]
-    expectedPass := parts[1]
-    
-    // Get credentials from request
-    user, pass, ok := r.BasicAuth()
-    
-    // Compare credentials using constant-time comparison
-    userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(expectedUser)) == 1
-    passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(expectedPass)) == 1
-    
-    if !ok || !userMatch || !passMatch {
-      w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
-      http.Error(w, "Unauthorized", http.StatusUnauthorized)
-      return
-    }
-    
-    handler(w, r)
-  }
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get credentials from environment or use defaults
+		userAndPass := os.Getenv("HTTP_USER_AND_PASS")
+		if userAndPass == "" {
+			userAndPass = "ir:ir"
+		}
+
+		// Split into username and password
+		parts := strings.SplitN(userAndPass, ":", 2)
+		if len(parts) != 2 {
+			log.Printf("Invalid HTTP_USER_AND_PASS format, using default 'ir:ir'")
+			parts = []string{"ir", "ir"}
+		}
+		expectedUser := parts[0]
+		expectedPass := parts[1]
+
+		// Get credentials from request
+		user, pass, ok := r.BasicAuth()
+
+		// Compare credentials using constant-time comparison
+		userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(expectedUser)) == 1
+		passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(expectedPass)) == 1
+
+		if !ok || !userMatch || !passMatch {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		handler(w, r)
+	}
 }
 
 func init() {
-  // Read MAX_AGE from environment or use default (1 day = 86400 seconds)
-  maxAgeStr := os.Getenv("MAX_AGE")
-  if maxAgeStr != "" {
-    age, err := strconv.Atoi(maxAgeStr)
-    if err != nil || age < 0 {
-      log.Printf("Invalid MAX_AGE value '%s', must be >= 0, using default 86400 (1 day)", maxAgeStr)
-      MaxAge = 86400
-    } else {
-      MaxAge = age
-      log.Printf("Cache max-age set to %d seconds from MAX_AGE env", MaxAge)
-    }
-  } else {
-    MaxAge = 86400 // 1 day default
-  }
+	// Read MAX_AGE from environment or use default (1 day = 86400 seconds)
+	maxAgeStr := os.Getenv("MAX_AGE")
+	if maxAgeStr != "" {
+		age, err := strconv.Atoi(maxAgeStr)
+		if err != nil || age < 0 {
+			log.Printf("Invalid MAX_AGE value '%s', must be >= 0, using default 86400 (1 day)", maxAgeStr)
+			MaxAge = 86400
+		} else {
+			MaxAge = age
+			log.Printf("Cache max-age set to %d seconds from MAX_AGE env", MaxAge)
+		}
+	} else {
+		MaxAge = 86400 // 1 day default
+	}
 }
 
 type ConfigInfo struct {
-  Port             string                   `json:"port"`
-  MaxDBSizeMB      int                      `json:"max_db_size_mb"`
-  WebPQuality      int                      `json:"webp_quality"`
-  MaxSize          int                      `json:"max_size"`
-  DBSizeMB         float64                  `json:"db_size_mb"`
-  DBSizeBytes      int64                    `json:"db_size_bytes"`
-  ImageCount       int                      `json:"image_count"`
-  DBSizeReadable   string                   `json:"db_size_readable"`
-  RefererStats     []database.DomainStat    `json:"referer_stats"`
-  // Additional fields for template
-  SizeClass        string                   `json:"-"`
-  ProgressClass    string                   `json:"-"`
-  UsagePercent     float64                  `json:"-"`
-  AverageImageSize string                   `json:"-"`
+	Port           string                `json:"port"`
+	MaxDBSizeMB    int                   `json:"max_db_size_mb"`
+	WebPQuality    int                   `json:"webp_quality"`
+	MaxSize        int                   `json:"max_size"`
+	DBSizeMB       float64               `json:"db_size_mb"`
+	DBSizeBytes    int64                 `json:"db_size_bytes"`
+	ImageCount     int                   `json:"image_count"`
+	DBSizeReadable string                `json:"db_size_readable"`
+	RefererStats   []database.DomainStat `json:"referer_stats"`
+	// Additional fields for template
+	SizeClass        string  `json:"-"`
+	ProgressClass    string  `json:"-"`
+	UsagePercent     float64 `json:"-"`
+	AverageImageSize string  `json:"-"`
 }
 
 func ConfigHandler(w http.ResponseWriter, r *http.Request) {
-  // Get database size
-  dbSize, err := database.GetDatabaseSize()
-  if err != nil {
-    http.Error(w, fmt.Sprintf("Failed to get database size: %v", err), http.StatusInternalServerError)
-    return
-  }
+	// Get database size
+	dbSize, err := database.GetDatabaseSize()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get database size: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-  // Get image count
-  var imageCount int
-  err = database.DB.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&imageCount)
-  if err != nil {
-    http.Error(w, fmt.Sprintf("Failed to count images: %v", err), http.StatusInternalServerError)
-    return
-  }
+	// Get image count
+	var imageCount int
+	err = database.DB.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&imageCount)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to count images: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-  // Get port from environment
-  port := os.Getenv("PORT")
-  if port == "" {
-    port = "8080"
-  }
+	// Get port from environment
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
-  // Convert database size to MB
-  dbSizeMB := float64(dbSize) / (1024 * 1024)
+	// Convert database size to MB
+	dbSizeMB := float64(dbSize) / (1024 * 1024)
 
-  // Create readable size string
-  var dbSizeReadable string
-  if dbSizeMB >= 1 {
-    dbSizeReadable = fmt.Sprintf("%.2f MB", dbSizeMB)
-  } else {
-    dbSizeKB := float64(dbSize) / 1024
-    dbSizeReadable = fmt.Sprintf("%.2f KB", dbSizeKB)
-  }
+	// Create readable size string
+	var dbSizeReadable string
+	if dbSizeMB >= 1 {
+		dbSizeReadable = fmt.Sprintf("%.2f MB", dbSizeMB)
+	} else {
+		dbSizeKB := float64(dbSize) / 1024
+		dbSizeReadable = fmt.Sprintf("%.2f KB", dbSizeKB)
+	}
 
-  // Get referer statistics
-  refererStats, err := database.GetAggregatedRefererStats()
-  if err != nil {
-    // Log error but don't fail the whole page
-    fmt.Printf("Failed to get referer stats: %v\n", err)
-    refererStats = []database.DomainStat{}
-  }
+	// Get referer statistics
+	refererStats, err := database.GetAggregatedRefererStats()
+	if err != nil {
+		// Log error but don't fail the whole page
+		fmt.Printf("Failed to get referer stats: %v\n", err)
+		refererStats = []database.DomainStat{}
+	}
 
-  usagePercent := getUsagePercent(dbSizeMB, float64(database.MaxDatabaseSizeMB))
-  
-  config := ConfigInfo{
-    Port:             port,
-    MaxDBSizeMB:      database.MaxDatabaseSizeMB,
-    WebPQuality:      WebPQuality,
-    MaxSize:          MaxSize,
-    DBSizeMB:         dbSizeMB,
-    DBSizeBytes:      dbSize,
-    ImageCount:       imageCount,
-    DBSizeReadable:   dbSizeReadable,
-    RefererStats:     refererStats,
-    SizeClass:        getSizeClass(dbSizeMB, float64(database.MaxDatabaseSizeMB)),
-    ProgressClass:    getProgressClass(dbSizeMB, float64(database.MaxDatabaseSizeMB)),
-    UsagePercent:     usagePercent,
-    AverageImageSize: getAverageImageSize(dbSize, imageCount),
-  }
+	usagePercent := getUsagePercent(dbSizeMB, float64(database.MaxDatabaseSizeMB))
 
-  // Check if client wants JSON
-  if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(config)
-    return
-  }
+	config := ConfigInfo{
+		Port:             port,
+		MaxDBSizeMB:      database.MaxDatabaseSizeMB,
+		WebPQuality:      WebPQuality,
+		MaxSize:          MaxSize,
+		DBSizeMB:         dbSizeMB,
+		DBSizeBytes:      dbSize,
+		ImageCount:       imageCount,
+		DBSizeReadable:   dbSizeReadable,
+		RefererStats:     refererStats,
+		SizeClass:        getSizeClass(dbSizeMB, float64(database.MaxDatabaseSizeMB)),
+		ProgressClass:    getProgressClass(dbSizeMB, float64(database.MaxDatabaseSizeMB)),
+		UsagePercent:     usagePercent,
+		AverageImageSize: getAverageImageSize(dbSize, imageCount),
+	}
 
-  // Return HTML response using template
-  layoutPath := filepath.Join("templates", "layout.html")
-  tmplPath := filepath.Join("templates", "config.html")
-  tmpl, err := template.ParseFiles(layoutPath, tmplPath)
-  if err != nil {
-    http.Error(w, fmt.Sprintf("Failed to load template: %v", err), http.StatusInternalServerError)
-    return
-  }
+	// Check if client wants JSON
+	if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(config)
+		return
+	}
 
-  w.Header().Set("Content-Type", "text/html; charset=utf-8")
-  if err := tmpl.Execute(w, config); err != nil {
-    http.Error(w, fmt.Sprintf("Failed to render template: %v", err), http.StatusInternalServerError)
-    return
-  }
+	// Return HTML response using pre-parsed template
+	if configTemplate == nil {
+		http.Error(w, "Template not available", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := configTemplate.Execute(w, config); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to render template: %v", err), http.StatusInternalServerError)
+		return
+	}
 }
 
 func getSizeClass(current, max float64) string {
-  percent := (current / max) * 100
-  if percent >= 90 {
-    return "warning"
-  }
-  return ""
+	percent := (current / max) * 100
+	if percent >= 90 {
+		return "warning"
+	}
+	return ""
 }
 
 func getProgressClass(current, max float64) string {
-  percent := (current / max) * 100
-  if percent >= 90 {
-    return "danger"
-  } else if percent >= 70 {
-    return "warning"
-  }
-  return ""
+	percent := (current / max) * 100
+	if percent >= 90 {
+		return "danger"
+	} else if percent >= 70 {
+		return "warning"
+	}
+	return ""
 }
 
 func getUsagePercent(current, max float64) float64 {
-  if max == 0 {
-    return 0
-  }
-  percent := (current / max) * 100
-  // Round to single digit (nearest integer)
-  return float64(int(percent + 0.5))
+	if max == 0 {
+		return 0
+	}
+	percent := (current / max) * 100
+	// Round to single digit (nearest integer)
+	return float64(int(percent + 0.5))
 }
 
 func getAverageImageSize(totalSize int64, imageCount int) string {
-  if imageCount == 0 {
-    return "N/A"
-  }
-  avgSize := float64(totalSize) / float64(imageCount)
-  if avgSize >= 1024*1024 {
-    return fmt.Sprintf("%.2f MB", avgSize/(1024*1024))
-  }
-  return fmt.Sprintf("%.2f KB", avgSize/1024)
+	if imageCount == 0 {
+		return "N/A"
+	}
+	avgSize := float64(totalSize) / float64(imageCount)
+	if avgSize >= 1024*1024 {
+		return fmt.Sprintf("%.2f MB", avgSize/(1024*1024))
+	}
+	return fmt.Sprintf("%.2f KB", avgSize/1024)
 }
 
 type ToggleRequest struct {
-  Domain string `json:"domain"`
+	Domain string `json:"domain"`
 }
 
 type ToggleResponse struct {
-  Success bool   `json:"success"`
-  Error   string `json:"error,omitempty"`
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
 }
 
 func ToggleDomainHandler(w http.ResponseWriter, r *http.Request) {
-  if r.Method != http.MethodPost {
-    http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-    return
-  }
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
-  body, err := io.ReadAll(r.Body)
-  if err != nil {
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(ToggleResponse{
-      Success: false,
-      Error:   "Failed to read request body",
-    })
-    return
-  }
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024)) // Limit to 1KB
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{
+			Success: false,
+			Error:   "Failed to read request body",
+		})
+		return
+	}
 
-  var req ToggleRequest
-  if err := json.Unmarshal(body, &req); err != nil {
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(ToggleResponse{
-      Success: false,
-      Error:   "Invalid JSON",
-    })
-    return
-  }
+	var req ToggleRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{
+			Success: false,
+			Error:   "Invalid JSON",
+		})
+		return
+	}
 
-  if req.Domain == "" {
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(ToggleResponse{
-      Success: false,
-      Error:   "Domain is required",
-    })
-    return
-  }
+	if req.Domain == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{
+			Success: false,
+			Error:   "Domain is required",
+		})
+		return
+	}
 
-  // Don't allow toggling special domains
-  if req.Domain == "direct" || req.Domain == "hidden" {
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(ToggleResponse{
-      Success: false,
-      Error:   "Cannot toggle status for special domains",
-    })
-    return
-  }
+	// Don't allow toggling special domains
+	if req.Domain == "direct" || req.Domain == "hidden" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{
+			Success: false,
+			Error:   "Cannot toggle status for special domains",
+		})
+		return
+	}
 
-  err = database.ToggleDomainStatus(req.Domain)
-  if err != nil {
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(ToggleResponse{
-      Success: false,
-      Error:   fmt.Sprintf("Failed to toggle domain status: %v", err),
-    })
-    return
-  }
+	err = database.ToggleDomainStatus(req.Domain)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to toggle domain status: %v", err),
+		})
+		return
+	}
 
-  w.Header().Set("Content-Type", "application/json")
-  json.NewEncoder(w).Encode(ToggleResponse{
-    Success: true,
-  })
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ToggleResponse{
+		Success: true,
+	})
 }
