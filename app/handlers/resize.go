@@ -33,6 +33,9 @@ var WebPQuality int
 // MaxSize is the maximum width/height allowed for images
 var MaxSize int
 
+// AllowedDomains is a list of domains allowed as image sources (empty = allow all)
+var AllowedDomains []string
+
 // Shared HTTP client for fetching remote images
 var httpClient *http.Client
 
@@ -77,6 +80,20 @@ func init() {
 		MaxSize = 1600
 		log.Printf("Max image size set to default %d", MaxSize)
 	}
+
+	// Read ALLOWED_DOMAINS from environment (comma-separated list)
+	allowedStr := os.Getenv("ALLOWED_DOMAINS")
+	if allowedStr != "" {
+		for _, d := range strings.Split(allowedStr, ",") {
+			d = strings.TrimSpace(strings.ToLower(d))
+			if d != "" {
+				AllowedDomains = append(AllowedDomains, d)
+			}
+		}
+		log.Printf("Allowed source domains: %v", AllowedDomains)
+	} else {
+		log.Println("Warning: ALLOWED_DOMAINS not set, all source domains are allowed")
+	}
 }
 
 // Helper function to encode image as WebP using Google's libwebp
@@ -110,6 +127,65 @@ func encodeFallback(format string, img image.Image, buf *bytes.Buffer, mimeType 
 		*outputFormat = "jpeg"
 		jpeg.Encode(buf, img, &jpeg.Options{Quality: WebPQuality})
 	}
+}
+
+// isAllowedSource checks if the source URL's domain is in the whitelist.
+// Returns true if AllowedDomains is empty (no restriction) or domain matches.
+// Supports wildcard matching: "*.example.com" matches "cdn.example.com".
+func isAllowedSource(srcURL string) bool {
+	if len(AllowedDomains) == 0 {
+		return true
+	}
+
+	parsed, err := url.Parse(srcURL)
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	for _, allowed := range AllowedDomains {
+		if strings.HasPrefix(allowed, "*.") {
+			// Wildcard: *.example.com matches sub.example.com and example.com
+			suffix := allowed[1:] // ".example.com"
+			if host == allowed[2:] || strings.HasSuffix(host, suffix) {
+				return true
+			}
+		} else if host == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateIP checks if a hostname looks like a private/internal address (SSRF protection)
+func isPrivateHost(srcURL string) bool {
+	parsed, err := url.Parse(srcURL)
+	if err != nil {
+		return true // block on parse error
+	}
+	host := strings.ToLower(parsed.Hostname())
+
+	// Block obvious private/internal hosts
+	if host == "localhost" || host == "" {
+		return true
+	}
+	// Block private IPv4 ranges and loopback
+	privatePrefixes := []string{
+		"10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
+		"172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+		"172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+		"127.", "0.", "169.254.", "fd", "fe80:",
+	}
+	for _, prefix := range privatePrefixes {
+		if strings.HasPrefix(host, prefix) {
+			return true
+		}
+	}
+	// Block [::1] and similar IPv6 loopback
+	if host == "::1" || host == "[::1]" {
+		return true
+	}
+	return false
 }
 
 // enforceMaxSize ensures image dimensions don't exceed MaxSize while preserving aspect ratio
@@ -507,6 +583,23 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		srcURL = strings.Replace(srcURL, "http:/", "http://", 1)
 	}
 
+	// SSRF protection: block private/internal addresses (only when whitelist is configured)
+	if len(AllowedDomains) > 0 && isPrivateHost(srcURL) {
+		http.Error(w, "Source URL not allowed", http.StatusForbidden)
+		return
+	}
+
+	// Domain whitelist check
+	if !isAllowedSource(srcURL) {
+		parsed, _ := url.Parse(srcURL)
+		host := ""
+		if parsed != nil {
+			host = parsed.Hostname()
+		}
+		http.Error(w, fmt.Sprintf("Domain '%s' is not allowed", host), http.StatusForbidden)
+		return
+	}
+
 	// Track referer
 	referer := r.Header.Get("Referer")
 	go func() {
@@ -514,6 +607,16 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to track referer: %v", err)
 		}
 	}()
+
+	// Check if referer domain is disabled
+	domain := database.ExtractBaseDomain(referer)
+	isDisabled, err := database.IsDomainDisabled(domain)
+	if err != nil {
+		log.Printf("Error checking domain status: %v", err)
+	} else if isDisabled {
+		http.Error(w, "Domain '"+domain+"' is forbidden from using this resize service", http.StatusForbidden)
+		return
+	}
 
 	// params already parsed above
 	// Determine preferred output format based on client Accept header
@@ -549,16 +652,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 			w.Write(cachedData)
 			return
 		}
-	}
-
-	// Check if domain is disabled (only when downloading image)
-	domain := database.ExtractBaseDomain(referer)
-	isDisabled, err := database.IsDomainDisabled(domain)
-	if err != nil {
-		log.Printf("Error checking domain status: %v", err)
-	} else if isDisabled {
-		http.Error(w, "Domain '"+domain+"' is forbidden from using this resize service", http.StatusForbidden)
-		return
 	}
 
 	// Create request with headers
