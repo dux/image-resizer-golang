@@ -84,39 +84,40 @@ func InitDB() error {
 }
 
 func createTables() error {
-	query := `
-  CREATE TABLE IF NOT EXISTS image_cache (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    url TEXT NOT NULL,
-    cache_key TEXT NOT NULL DEFAULT '',
-    resized_data BLOB,
-    content_type TEXT,
-    response_format TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(url, cache_key)
-  );
+	// Migrate old schema first (before creating new table schema)
+	migrated := migrateOldSchema()
 
-  CREATE INDEX IF NOT EXISTS idx_url_cache_key ON image_cache(url, cache_key);
-  `
-
-	_, err := DB.Exec(query)
-	if err != nil {
-		return fmt.Errorf("failed to create tables: %w", err)
+	if !migrated {
+		// Only create table if migration didn't already recreate it
+		query := `
+    CREATE TABLE IF NOT EXISTS image_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      url TEXT NOT NULL,
+      cache_key TEXT NOT NULL DEFAULT '',
+      resized_data BLOB,
+      content_type TEXT,
+      response_format TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(url, cache_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_url_cache_key ON image_cache(url, cache_key);
+    `
+		if _, err := DB.Exec(query); err != nil {
+			return fmt.Errorf("failed to create tables: %w", err)
+		}
 	}
-
-	// Migrate old schema: if 'width' column exists, migrate data and drop it
-	migrateOldSchema()
 
 	log.Println("Database initialized successfully")
 	return nil
 }
 
-// migrateOldSchema handles migration from old width-based schema to cache_key-based schema
-func migrateOldSchema() {
+// migrateOldSchema handles migration from old width-based schema to cache_key-based schema.
+// Returns true if migration was performed (table was recreated).
+func migrateOldSchema() bool {
 	// Check if old 'width' column exists
 	rows, err := DB.Query("PRAGMA table_info(image_cache)")
 	if err != nil {
-		return
+		return false
 	}
 	defer rows.Close()
 
@@ -145,7 +146,7 @@ func migrateOldSchema() {
 		tx, err := DB.Begin()
 		if err != nil {
 			log.Printf("Migration failed to begin transaction: %v", err)
-			return
+			return false
 		}
 		defer tx.Rollback()
 
@@ -171,16 +172,19 @@ func migrateOldSchema() {
 		for _, m := range migrations {
 			if _, err := tx.Exec(m); err != nil {
 				log.Printf("Migration step failed: %v", err)
-				return
+				return false
 			}
 		}
 
 		if err := tx.Commit(); err != nil {
 			log.Printf("Migration commit failed: %v", err)
-			return
+			return false
 		}
 		log.Println("Database migration completed successfully")
+		return true
 	}
+
+	return false
 }
 
 func GetCachedImage(url string, cacheKey string) ([]byte, string, string, error) {
