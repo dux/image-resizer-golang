@@ -307,6 +307,28 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 		return img // No resizing needed
 	}
 
+	// Skip upscaling - don't enlarge images beyond their original size
+	origBounds := img.Bounds()
+	origW := origBounds.Dx()
+	origH := origBounds.Dy()
+
+	if !params.CropMode {
+		if targetWidth > 0 && targetHeight > 0 {
+			if targetWidth >= origW && targetHeight >= origH {
+				return img
+			}
+		} else if targetWidth > 0 && targetWidth >= origW {
+			return img
+		} else if targetHeight > 0 && targetHeight >= origH {
+			return img
+		}
+	} else {
+		// For crop: skip if both target dimensions are larger than original
+		if targetWidth >= origW && targetHeight >= origH {
+			return img
+		}
+	}
+
 	if params.CropMode {
 		// Resize and crop with custom anchor point
 		// We'll create a custom anchor that's 70% from top (0.3 position vertically)
