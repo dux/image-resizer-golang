@@ -80,11 +80,17 @@ func init() {
 		MaxSize = 1600
 		log.Printf("Max image size set to default %d", MaxSize)
 	}
+}
 
-	// Read ALLOWED_DOMAINS from environment (comma-separated list)
+// InitAllowedDomains reads ALLOWED_DOMAINS from environment. Must be called after godotenv.Load().
+func InitAllowedDomains() {
 	allowedStr := os.Getenv("ALLOWED_DOMAINS")
 	if allowedStr != "" {
-		for _, d := range strings.Split(allowedStr, ",") {
+		// Split on comma or semicolon
+		parts := strings.FieldsFunc(allowedStr, func(r rune) bool {
+			return r == ',' || r == ';'
+		})
+		for _, d := range parts {
 			d = strings.TrimSpace(strings.ToLower(d))
 			if d != "" {
 				AllowedDomains = append(AllowedDomains, d)

@@ -25,6 +25,9 @@ func main() {
 		log.Println("No .env file found")
 	}
 
+	// Initialize allowed domains (must be after .env load)
+	handlers.InitAllowedDomains()
+
 	// Initialize database
 	if err := database.InitDB(); err != nil {
 		log.Fatal("Failed to initialize database:", err)
