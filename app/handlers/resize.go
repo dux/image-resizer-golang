@@ -409,11 +409,16 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 						fakeQuery.Set(parts[0], parts[1])
 					}
 				} else {
-					// Handle format without = sign (e.g., "w200", "c300", "h150")
+					// Handle format without = sign (e.g., "w200", "w_200", "c300x200", "h150")
 					if len(param) > 1 {
 						// Extract the parameter type (first character) and value
 						paramType := param[0:1]
 						paramValue := param[1:]
+
+						// Strip leading underscore (supports w_200 format)
+						if strings.HasPrefix(paramValue, "_") {
+							paramValue = paramValue[1:]
+						}
 
 						// Validate that the value is numeric (with optional 'x' for crop)
 						if paramType == "w" || paramType == "h" || paramType == "c" {
