@@ -138,7 +138,9 @@ func encodeFallback(format string, img image.Image, buf *bytes.Buffer, mimeType 
 // isAllowedSource checks if the source URL's domain is in the whitelist.
 // Returns true if AllowedDomains is empty (no restriction) or domain matches.
 // Supports wildcard matching: "*.example.com" matches "cdn.example.com".
-func isAllowedSource(srcURL string) bool {
+// Also auto-allows any subdomain of the service's own base domain
+// (e.g. if service runs on img.foo.bar, anything on *.foo.bar is allowed).
+func isAllowedSource(srcURL string, r *http.Request) bool {
 	if len(AllowedDomains) == 0 {
 		return true
 	}
@@ -149,6 +151,23 @@ func isAllowedSource(srcURL string) bool {
 	}
 
 	host := strings.ToLower(parsed.Hostname())
+
+	// Auto-allow sibling domains: if service is on img.foo.bar, allow *.foo.bar
+	if r != nil {
+		serviceHost := strings.ToLower(r.Host)
+		// Strip port
+		if idx := strings.LastIndex(serviceHost, ":"); idx != -1 {
+			serviceHost = serviceHost[:idx]
+		}
+		// Extract base domain (strip first subdomain)
+		if parts := strings.SplitN(serviceHost, ".", 2); len(parts) == 2 {
+			baseDomain := parts[1] // e.g. "sohospot.com" from "img.sohospot.com"
+			if host == baseDomain || strings.HasSuffix(host, "."+baseDomain) {
+				return true
+			}
+		}
+	}
+
 	for _, allowed := range AllowedDomains {
 		if strings.HasPrefix(allowed, "*.") {
 			// Wildcard: *.example.com matches sub.example.com and example.com
@@ -596,7 +615,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Domain whitelist check
-	if !isAllowedSource(srcURL) {
+	if !isAllowedSource(srcURL, r) {
 		parsed, _ := url.Parse(srcURL)
 		host := ""
 		if parsed != nil {
