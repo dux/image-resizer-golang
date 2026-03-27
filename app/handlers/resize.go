@@ -262,7 +262,7 @@ func encodeAVIF(img image.Image, quality int) ([]byte, error) {
 	opts := avif.Options{
 		Quality:      quality,
 		QualityAlpha: quality,
-		Speed:        6, // balance between speed and compression (0=slowest/best, 10=fastest/worst)
+		Speed:        9, // prioritize speed on small VPS (0=slowest/best, 10=fastest/worst)
 	}
 	err := avif.Encode(&buf, img, opts)
 	if err != nil {
