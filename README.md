@@ -1,353 +1,299 @@
 # GoLang Image Resizer
 
-A fast, efficient image resizing service built in Go with WebP support, intelligent caching, and domain management.
+A fast image resizing service built in Go with AVIF/WebP support, two-layer caching, worker pool architecture, and an admin dashboard.
 
-> Vibe coded while watching podcasts and Twitch&copy; by [@dux](https://twitter.com/dux)
+> Vibe coded while watching podcasts and Twitch by [@dux](https://twitter.com/dux)
 
 ## Features
 
-* ✅ **WebP Support** - Automatic WebP encoding for modern browsers
-* ✅ **Multiple Resize Modes** - Width, height, fit, and crop options
-* ✅ **Modern URL Format** - Clean URLs like `/r/w200?example.com/image.jpg`
-* ✅ **Auto-HTTPS** - Automatically prepends `https://` to URLs without protocol
-* ✅ **SVG Passthrough** - SVG files served without modification
-* ✅ **SQLite Caching** - Fast database cache with auto-cleanup
-* ✅ **Domain Management** - Block/allow specific domains
-* ✅ **Statistics Dashboard** - Monitor usage and performance
-* ✅ **Environment Configuration** - Easy deployment setup
-- ✅ **Default Limit**: 1600 pixels (configurable via `MAX_SIZE`)
-- ✅ **Aspect Ratio**: Always preserved when enforcing limits
-- ✅ **Cache Optimization**: Original images resized to max size before caching
-- ✅ **WebP Storage**: Cached images stored as WebP for efficiency
-- ✅ **Automatic Enforcement**: Requested dimensions automatically clamped to max size
+- **AVIF-first encoding** - AVIF > WebP > JPEG/PNG fallback based on client Accept header
+- **Source caching** - remote images downloaded once, stored as AVIF at max 1600px, resized from cache
+- **Worker pool** - 5 concurrent resize workers with request and source coalescing
+- **Spinner fallback** - slow requests (>10s) return animated SVG placeholder, worker continues in background
+- **Cache explorer** - browse, preview, and manage all cached images via admin UI
+- **Domain management** - block/allow domains via referer tracking
+- **SSRF protection** - blocks private/internal IP ranges
+- **Multiple resize modes** - width, height, fit, crop with smart 70/30 vertical focus
+- **SQLite caching** - WAL mode, auto-cleanup, paginated API
+- **Live logs** - WebSocket-powered real-time log viewer
 
 ## Quick Start
 
-### Prerequisites
-- Go 1.21+ installed
-- Git
-- SQLite development libraries (for CGO)
-- WebP development libraries (for image processing)
-
-### Installation
-
 ```bash
-# Clone the repository
 git clone https://github.com/dux/image-resizer-golang.git
 cd image-resizer-golang
-
-# Install dependencies
 go mod download
-
-# Run the server
-cd app
-go run main.go
+make build
+PORT=8080 bin/server
 ```
 
-The server will start on `http://localhost:8080`
+## URL Format
 
-### Quick Examples
+```
+/r/{params}?{source_url}
+```
+
+Source URLs without protocol default to `https://`. Examples:
 
 ```bash
-# Resize to 200px width (new format)
-http://localhost:8080/r/w200?example.com/image.jpg
+# Width resize (height scales proportionally)
+/r/w300?example.com/image.jpg
 
-# Crop to 300x300 square
-http://localhost:8080/r/c300?example.com/image.jpg
+# Height resize
+/r/h200?example.com/image.jpg
 
-# Multiple parameters
-http://localhost:8080/r/c300x200?example.com/image.jpg
+# Crop to exact dimensions (smart 70/30 vertical focus)
+/r/c300x200?example.com/image.jpg
+
+# Square crop
+/r/c300?example.com/image.jpg
+
+# Fit within bounds (preserves aspect ratio)
+/r/w300x200?example.com/image.jpg
 
 # With explicit protocol
-http://localhost:8080/r/w=200?https://example.com/image.jpg
+/r/w200?https://example.com/image.jpg
 
 # Legacy format (still supported)
-http://localhost:8080/r?src=https://example.com/image.jpg&w=200
+/resize?src=https://example.com/image.jpg&w=200
 ```
 
-### Build for Production
+Both `w200` and `w=200` and `w_200` formats work.
 
-```bash
-# Build binary
-make build
+## Architecture
 
-# Run
-PORT=4000 bin/server
+### Two-Layer Cache
+
+Every image resize creates up to two cache entries in SQLite:
+
+```
+Request: /r/w100?example.com/photo.jpg
+
+1. Source cache (key: "source")
+   - Downloaded from remote once
+   - Decoded, resized to max 1600px
+   - Encoded as AVIF, stored in DB
+   - Shared by all resize variants of this URL
+
+2. Resize cache (key: "w_100_avif")
+   - Resized from source cache (no re-download)
+   - Encoded in client's preferred format
+   - Served on subsequent requests
 ```
 
-### SystemD Service
+If `w100`, `w200`, and `c50` are all requested for the same URL, the DB has 4 entries: 1 source + 3 variants. The source image is only downloaded once.
 
-Generate systemd service configuration:
+### Worker Pool
 
-```bash
-# Output systemd service file
-make systemd
-
-# Save to system (as root)
-make systemd > /etc/systemd/system/image-resizer.service
-
-# Enable and start service
-systemctl enable image-resizer
-systemctl start image-resizer
 ```
+HTTP request goroutines (unlimited, fast):
+  Cache HIT?  -> serve instantly
+  Cache MISS? -> submit job to worker pool, wait up to 10s
+                   |
+                Done in 10s? -> serve result
+                Timeout?     -> return spinner SVG (browser retries after 10s)
+
+Worker pool (5 goroutines, configurable via WORKERS env):
+  - Picks jobs from buffered channel (capacity 256)
+  - 60s timeout per job
+  - Overflow to goroutine if channel full
+```
+
+### Request Coalescing (Two Levels)
+
+**Resize coalescing** - 10 concurrent requests for `/r/w100?same-image.jpg` = 1 resize job, all 10 get the result.
+
+**Source coalescing** - 5 concurrent requests for `/r/w100`, `/r/w200`, `/r/c50`, `/r/h300`, `/r/w400` of the same image = 1 source download, 5 parallel resize jobs.
+
+### Timeout Handling
+
+If a resize takes longer than 10 seconds (large remote images, slow servers):
+
+1. Handler returns an animated **spinner SVG** placeholder:
+   - White background, `#ddd` 1px border, 6px radius, rotating arc animation
+   - `Cache-Control: no-cache, max-age=10` + `Retry-After: 10`
+   - `X-Cache: QUEUED`
+
+2. Worker **continues in background**, caches the result
+
+3. Next request (after 10s) serves the **cached image**
+
+Failed downloads return an **error SVG**: light red background (`#fff8f8`), pink border, exclamation icon. Not cached, `max-age=60`.
+
+## Format Negotiation
+
+Based on client `Accept` header:
+
+| Client supports | Output format |
+|---|---|
+| `image/avif` | AVIF (best compression) |
+| `image/webp` (no AVIF) | WebP |
+| Neither | JPEG or PNG (original format) |
+| GIF source | Always GIF (first frame only) |
+| SVG source | Passthrough (no manipulation) |
+
+Separate cache entries per format: same URL + same size + different Accept = different cache keys (`w_100_avif` vs `w_100_webp` vs `w_100_jpg`).
+
+## Admin Dashboard
+
+All admin routes require Basic Auth (default `ir:ir`, configure via `HTTP_USER_AND_PASS` env).
+
+### Config (`/config` or `/c`)
+
+- Server settings (port, quality, max size, max-age)
+- Database statistics (size, image count, usage bar)
+- Referer statistics with per-domain request counts
+- Domain enable/disable toggles
+- Cache management: "Clear All Cache" button
+- JSON output: `/config?format=json`
+
+### Cache Explorer (`/cache`)
+
+- Paginated list of all cached images (50 per page)
+- Thumbnails served from cache directly (no new resize triggered)
+- Hover preview (max 500px) with dimensions tooltip
+- Click to open full image in new tab
+- Source entries shown with paper background and "source" badge
+- Per-item delete button
+- Clear by period: "last 1h", "last 24h", "older than 7d", "All"
+
+### Live Logs (`/logs`)
+
+- WebSocket real-time log stream
+- Circular buffer of last 1000 log messages
+- New clients receive full history on connect
 
 ## Configuration
 
-Configure via environment variables:
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8080` | Server port |
+| `WORKERS` | `5` | Parallel resize worker goroutines |
+| `QUALITY` | `90` | AVIF/WebP/JPEG encoding quality (10-100) |
+| `MAX_SIZE` | `1600` | Max image dimension in pixels (100-10000) |
+| `MAX_AGE` | `86400` | Cache-Control max-age in seconds (1 day) |
+| `MAX_DB_SIZE` | `1000` | Max SQLite cache size in MB before auto-cleanup |
+| `ALLOWED_DOMAINS` | _(all)_ | Comma-separated allowed source domains, supports `*.example.com` |
+| `HTTP_USER_AND_PASS` | `ir:ir` | Basic auth credentials for admin pages (`user:pass`) |
 
-```bash
-export PORT=8080              # Server port (default: 8080)
-export QUALITY=90             # Image quality 10-100 (default: 90)
-export MAX_DB_SIZE=500        # Max cache size in MB (default: 500)
-export MAX_SIZE=1600          # Max image dimensions in pixels (default: 1600)
-```
+Also loads from `.env` file if present.
 
-## API Reference
+## Caching Details
 
-### Image Resizing - `/r`
+- **Storage**: SQLite with WAL mode, 64MB page cache, 256MB mmap
+- **Cleanup**: Background goroutine checks every minute; if DB exceeds `MAX_DB_SIZE`, deletes oldest 50% + VACUUM
+- **Cache bypass**: Client `Cache-Control: no-cache` headers are **ignored** - only the admin "Clear Cache" button purges cache
+- **Retry on busy**: Cache reads/writes retry 3x with 50ms delay on busy DB
 
-Resize images with various parameters. The service supports two URL formats:
+### Cache-Control Headers
 
-#### New Format (Recommended)
-Parameters in the path, URL as query string:
-```
-GET /r/w300?example.com/image.jpg # Optional = sign, auto-prepends https://
-```
+| Response type | Headers |
+|---|---|
+| Cache HIT | `public, max-age={MAX_AGE}, immutable`, `X-Cache: HIT` |
+| Cache MISS | `public, max-age={MAX_AGE}, immutable`, `X-Cache: MISS` |
+| Spinner (timeout) | `no-cache, max-age=10`, `Retry-After: 10`, `X-Cache: QUEUED` |
+| Error SVG | `no-cache, max-age=60`, `X-Cache: MISS` |
 
-### Resize Parameters
+## Security
 
-#### Fixed Width
-```
-GET /r/w300?example.com/image.jpg
+- **SSRF protection**: When `ALLOWED_DOMAINS` is set, blocks requests to private IPs (`10.*`, `192.168.*`, `172.16-31.*`, `127.*`, `169.254.*`, `::1`, `fd*`, `fe80:*`)
+- **Domain whitelist**: Wildcard support (`*.example.com`), auto-allows sibling domains of the service host
+- **Domain blocking**: Disable specific referer domains via admin dashboard
+- **Basic Auth**: Constant-time credential comparison for admin endpoints
+- **Path traversal**: Blocked on `/i` image info endpoint
 
-```
-Resize to 300px width, height scales proportionally.
+## Routes
 
-#### Fixed Height
-```
-GET /r/h200?example.com/image.jpg
-```
-Resize to 200px height, width scales proportionally.
+| Route | Auth | Description |
+|---|---|---|
+| `GET /` | No | Home page |
+| `GET /r/{params}?{url}` | No | Resize image |
+| `GET /resize?src={url}&w=N` | No | Legacy resize |
+| `GET /i?src={path}` | No | Local image info (JSON) |
+| `GET /demo` | No | Interactive demo page |
+| `GET /config` | Yes | Admin dashboard |
+| `GET /cache` | Yes | Cache explorer |
+| `GET /cache/preview?id=N` | Yes | Serve cached blob |
+| `POST /config/clear-cache` | Yes | Clear cache by period |
+| `POST /config/delete-cache-item` | Yes | Delete single cache entry |
+| `POST /config/toggle-domain` | Yes | Enable/disable domain |
+| `GET /logs` | Yes | Live log viewer |
+| `WS /ws/logs` | Yes | WebSocket log stream |
+| `GET /favicon.ico` | No | SVG favicon |
 
-#### Fit Within Bounds
-```
-GET /r/w=300x200?https://example.com/image.jpg
-```
-Fit image within 300x200 constraints while maintaining aspect ratio.
-
-#### Crop to Exact Size
-```
-GET /r/c300x200?example.com/image.jpg
-```
-Crop to exactly 300x200 with smart cropping (70% top focus).
-
-#### Square Crop
-```
-GET /r/c300?example.com/image.jpg
-```
-Crop to 300x300 square.
-
-### URL Format Features
-
-- **Optional equals sign**: Both `/r/w=200` and `/r/w200` are valid
-- **Auto-HTTPS**: URLs without protocol default to `https://`
-  - `example.com/image.jpg` → `https://example.com/image.jpg`
-- **Query string preservation**: Full URL including parameters is preserved
-  - `/r/w200?example.com/image.jpg?param1=value1&param2=value2`
-
-### Image Information - `/i`
-
-Get image metadata:
-
-```
-GET /i?src=https://example.com/image.jpg
-```
-
-Returns JSON with image properties:
-```json
-{
-  "source": "https://example.com/image.jpg",
-  "width": 1920,
-  "height": 1080,
-  "format": "jpeg",
-  "fileSize": 245760,
-  "filename": "image.jpg"
-}
-```
-
-### Demo Page - `/demo`
-
-Interactive demo page to test image resizing:
-- Try different resize parameters
-- Test with random Pixabay images
-- See live examples of all resize modes
-
-### Configuration Dashboard - `/c`
-
-Access the admin dashboard to:
-- View server configuration
-- Monitor database usage
-- See domain statistics
-- Enable/disable domains
-
-## Response Headers
-
-The service includes helpful headers:
-
-- `X-Cache: HIT|MISS` - Cache status
-- `X-Info` - Processing information
-- `Content-Type` - Appropriate MIME type
-
-## Caching
-
-- **Automatic**: Images cached in SQLite database
-- **Cleanup**: Old cache entries automatically removed
-- **Size Limit**: Configurable maximum cache size
-- **Performance**: Cached images served instantly
-
-## Domain Management
-
-Control which domains can use your service:
-
-1. Visit `/c` (configuration dashboard)
-2. View domain statistics
-3. Click "Disable" to block domains
-4. Click "Enable" to restore access
-
-Disabled domains receive HTTP 403 responses.
-
-## Supported Formats
-
-**Input**: JPEG, PNG, GIF, WebP, SVG
-**Output**: WebP (preferred), JPEG, PNG, GIF, SVG
-
-## Size Limits
-
-The service enforces a maximum size limit for both width and height:
-
-## Development
-
-### Project Structure
+## Project Structure
 
 ```
 app/
-├── main.go                 # Entry point
-├── handlers/              # HTTP handlers
-│   ├── home.go            # Home page
-│   ├── resize.go          # Image resizing
-│   ├── image_info.go      # Image metadata
-│   └── config.go          # Admin dashboard
-├── database/              # Database layer
-│   ├── db.go              # Image cache
-│   └── referer_db.go      # Domain tracking
-├── models/                # Data models
-│   └── image.go           # Image struct
-└── templates/             # HTML templates
-    ├── home.html          # Landing page
-    └── config.html        # Admin dashboard
+  main.go                   # Entry point, routes, graceful shutdown
+  handlers/
+    resize.go               # URL parsing, format negotiation, resize logic
+    worker.go               # Worker pool, source caching, coalescing, SVG generators
+    config.go               # Admin dashboard, cache management, auth middleware
+    home.go                 # Template init, home page handler
+    logs.go                 # WebSocket live logs
+    image_info.go           # Image metadata API
+    demo.go                 # Demo page with random images
+    favicon.go              # Inline SVG favicon
+  database/
+    db.go                   # Image cache SQLite (WAL, cleanup, pagination)
+    referer_db.go           # Referer tracking SQLite
+  models/
+    image.go                # Image metadata struct
+templates/
+  layout.html               # Shared HTML layout with navbar
+  home.html                 # Landing page
+  demo.html                 # Demo page
+  config.html               # Admin dashboard
+  cache.html                # Cache explorer with pagination
+  logs.html                 # Live log viewer
+test/
+  resize_test.go            # 30+ tests + benchmarks
 ```
 
-### Adding Features
-
-1. **New Handler**: Add to `handlers/` directory
-2. **Register Route**: Update `main.go`
-3. **Database**: Extend `database/` if needed
-4. **Templates**: Add to `templates/` for UI
-
-## Docker Support
-
-### Quick Start with Docker
+## Development
 
 ```bash
-# Build the Docker image
-docker build -t image-resizer .
-
-# Run the container
-docker run -d -p 8080:8080 --name image-resizer image-resizer
-
-# With custom configuration
-docker run -d \
-  -p 8080:8080 \
-  -e PORT=8080 \
-  -e QUALITY=85 \
-  -e MAX_DB_SIZE=1000 \
-  -e MAX_SIZE=2000 \
-  -v $(pwd)/data:/app/data \
-  --name image-resizer \
-  image-resizer
+make build          # Compile to bin/server
+make run            # go run app/main.go
+make dev            # Watch for changes and restart (requires entr)
+make test           # Run all tests
+make test-resize    # Verbose resize tests
+make clean          # Remove bin/
+make nginx          # Print nginx reverse proxy config
+make systemd        # Print systemd service unit
+make re-deploy      # Git pull + build + restart systemd
 ```
 
-### Docker Compose
-
-The project includes a `docker-compose.yml` with multiple configurations:
+## Docker
 
 ```bash
-# Run standalone application (port 8080)
+# Standalone
 docker-compose up -d app
 
-# Run with Nginx reverse proxy (port 80)
+# With Nginx reverse proxy (port 80)
 docker-compose --profile nginx up -d
 
-# Run development mode with hot reload (port 8081)
+# Development with hot reload (port 8081)
 docker-compose --profile dev up -d
 ```
 
-#### Environment Variables
+## Dependencies
 
-All services support these environment variables:
-
-- `PORT`: Application port (default: 8080)
-- `QUALITY`: Image compression quality 10-100 (default: 90)
-- `MAX_DB_SIZE`: Maximum cache size in MB (default: 500)
-- `MAX_SIZE`: Maximum image dimensions (default: 1600)
-
-### Production Deployment with Nginx
-
-The Nginx-enabled Docker image (`Dockerfile.nginx`) includes:
-
-- **Reverse Proxy**: Nginx forwards requests to the Go application
-- **Static File Serving**: Nginx serves static files directly
-- **Caching**: Built-in proxy caching for better performance
-- **Compression**: Gzip compression enabled
-- **Security Headers**: X-Content-Type-Options, X-Frame-Options, etc.
-- **WebSocket Support**: For live logs functionality
-- **Health Check**: `/health` endpoint for monitoring
-- **WebP Tools**: `cwebp` and `dwebp` utilities included
-
-```bash
-# Build and run with Nginx
-docker build -f Dockerfile.nginx -t image-resizer-nginx .
-docker run -d -p 80:80 -v $(pwd)/data:/app/data image-resizer-nginx
-```
-
-### Docker Hub
-
-```bash
-# Pull from Docker Hub (if published)
-docker pull yourusername/image-resizer:latest
-
-# Run from Docker Hub
-docker run -d -p 8080:8080 yourusername/image-resizer:latest
-```
+| Package | Purpose |
+|---|---|
+| `disintegration/imaging` | Resize/crop with Lanczos filter |
+| `gen2brain/avif` | AVIF encode/decode |
+| `kolesa-team/go-webp` | WebP encode (Google libwebp) |
+| `mattn/go-sqlite3` | SQLite driver |
+| `gorilla/websocket` | WebSocket for live logs |
+| `joho/godotenv` | .env file loading |
+| `golang.org/x/image` | WebP decoder |
 
 ## License
 
-MIT License - Feel free to use in your projects!
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## Support
-
-- 🐛 **Issues**: [GitHub Issues](https://github.com/dux/image-resizer-golang/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/dux/image-resizer-golang/discussions)
-- 🐦 **Twitter**: [@dux](https://twitter.com/dux)
+MIT License
 
 ---
 
-Built with ❤️ in Go
+Built with Go by [@dux](https://twitter.com/dux)
