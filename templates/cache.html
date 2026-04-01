@@ -183,6 +183,18 @@
         border: none;
         padding: 6px 8px;
     }
+    #hover-preview {
+        display: none;
+        position: fixed;
+        z-index: 9999;
+        max-width: 500px;
+        max-height: 500px;
+        border-radius: 6px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+        border: 1px solid #ddd;
+        background: white;
+        pointer-events: none;
+    }
 </style>
 {{end}}
 
@@ -221,10 +233,10 @@
             <tbody>
                 {{range .Images}}
                 <tr id="row-{{.ID}}">
-                    <td>
+                    <td data-preview="/cache/preview?id={{.ID}}">
                         <img class="thumb" src="/cache/preview?id={{.ID}}" alt="" loading="lazy">
                     </td>
-                    <td class="url-cell" title="{{.URL}}">
+                    <td class="url-cell" title="{{.URL}}" data-preview="/cache/preview?id={{.ID}}">
                         <a href="{{.URL}}" target="_blank">{{.URL}}</a>
                     </td>
                     <td><span class="badge" style="background:#f0f0f0;color:#555;">{{.CacheKey}}</span></td>
@@ -267,10 +279,52 @@
         {{end}}
     </div>
 </div>
+<img id="hover-preview" src="" alt="">
 {{end}}
 
 {{define "scripts"}}
 <script>
+    (function() {
+        var preview = document.getElementById('hover-preview');
+        var cells = document.querySelectorAll('[data-preview]');
+
+        cells.forEach(function(cell) {
+            cell.style.cursor = 'pointer';
+
+            cell.addEventListener('mouseenter', function(e) {
+                var src = cell.getAttribute('data-preview');
+                preview.src = src;
+                preview.style.display = 'block';
+            });
+
+            cell.addEventListener('mousemove', function(e) {
+                var x = e.clientX + 16;
+                var y = e.clientY + 16;
+                // keep within viewport
+                if (x + 520 > window.innerWidth) x = e.clientX - 520;
+                if (y + 520 > window.innerHeight) y = e.clientY - 520;
+                preview.style.left = x + 'px';
+                preview.style.top = y + 'px';
+            });
+
+            cell.addEventListener('mouseleave', function() {
+                preview.style.display = 'none';
+                preview.src = '';
+            });
+
+            cell.addEventListener('click', function(e) {
+                if (e.target.tagName === 'A') return; // let links work
+                var src = cell.getAttribute('data-preview');
+                window.open(src, '_blank');
+            });
+        });
+
+        // Show dimensions on the preview image once loaded
+        preview.addEventListener('load', function() {
+            preview.title = preview.naturalWidth + ' x ' + preview.naturalHeight;
+        });
+    })();
+
     function deleteItem(id) {
         fetch('/config/delete-cache-item', {
             method: 'POST',
