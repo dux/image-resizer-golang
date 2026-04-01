@@ -41,6 +41,9 @@ func main() {
 	// Start database cleanup service
 	database.StartCleanupService()
 
+	// Start resize worker pool (reads WORKERS env, default 5)
+	handlers.StartWorkerPool(0)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", handlers.HomeHandler)

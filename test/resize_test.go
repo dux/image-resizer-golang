@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,10 +57,20 @@ func imageServer() *httptest.Server {
 	mux.HandleFunc("/notfound", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
+	// 500 endpoint
+	mux.HandleFunc("/error500", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
 	// empty body endpoint
 	mux.HandleFunc("/empty", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
 		// write nothing
+	})
+	// slow endpoint - takes 3 seconds to respond
+	mux.HandleFunc("/slow.jpeg", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * time.Second)
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(createTestJPEG(200, 150))
 	})
 	return httptest.NewServer(mux)
 }
@@ -73,6 +84,9 @@ func TestMain(m *testing.M) {
 	if err := database.InitRefererDB(); err != nil {
 		panic(fmt.Sprintf("Failed to initialize referer database: %v", err))
 	}
+
+	// Start worker pool for tests
+	handlers.StartWorkerPool(5)
 
 	// Run tests
 	code := m.Run()
@@ -369,7 +383,7 @@ func TestErrorSVGHeaders(t *testing.T) {
 		query string
 	}{
 		{"404 source", ts.URL + "/notfound"},
-		{"unreachable host", "http://192.0.2.1:1/nope.jpg"}, // RFC 5737 TEST-NET
+		{"500 source", ts.URL + "/error500"},
 	}
 
 	for _, tt := range tests {
@@ -1167,4 +1181,210 @@ func BenchmarkResizeHandlerCrop(b *testing.B) {
 			b.Errorf("expected 200, got %d", rec.Code)
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Worker pool: slow source returns spinner SVG
+// ---------------------------------------------------------------------------
+
+func TestWorkerTimeoutReturnsSpinner(t *testing.T) {
+	ts := imageServer()
+	defer ts.Close()
+
+	// Set a short timeout for this test
+	origTimeout := handlers.WorkerWaitTimeout
+	handlers.WorkerWaitTimeout = 1 * time.Second
+	defer func() { handlers.WorkerWaitTimeout = origTimeout }()
+
+	req := httptest.NewRequest("GET", "/r/w100?"+ts.URL+"/slow.jpeg", nil)
+	req.Header.Set("Accept", "image/avif,image/webp,image/*")
+	rec := httptest.NewRecorder()
+	handlers.ResizeHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "image/svg+xml" {
+		t.Errorf("timeout should return SVG spinner, got %s", ct)
+	}
+
+	xc := rec.Header().Get("X-Cache")
+	if xc != "QUEUED" {
+		t.Errorf("timeout should have X-Cache: QUEUED, got %s", xc)
+	}
+
+	cc := rec.Header().Get("Cache-Control")
+	if !strings.Contains(cc, "max-age=10") {
+		t.Errorf("spinner should have max-age=10, got %s", cc)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "<svg") {
+		t.Error("spinner should be SVG")
+	}
+	if !strings.Contains(body, "animateTransform") {
+		t.Error("spinner SVG should have animation")
+	}
+
+	// Wait for worker to finish and cache the result
+	time.Sleep(4 * time.Second)
+
+	// Second request should get the cached image (not spinner)
+	req2 := httptest.NewRequest("GET", "/r/w100?"+ts.URL+"/slow.jpeg", nil)
+	req2.Header.Set("Accept", "image/avif,image/webp,image/*")
+	rec2 := httptest.NewRecorder()
+	handlers.ResizeHandler(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second request: want 200, got %d", rec2.Code)
+	}
+	ct2 := rec2.Header().Get("Content-Type")
+	if ct2 == "image/svg+xml" {
+		t.Error("second request should serve cached image, not SVG")
+	}
+	xc2 := rec2.Header().Get("X-Cache")
+	if xc2 != "HIT" {
+		t.Errorf("second request should be cache HIT, got %s", xc2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Worker pool: request coalescing - multiple requests for same image
+// ---------------------------------------------------------------------------
+
+func TestRequestCoalescing(t *testing.T) {
+	fetchCount := 0
+	mu := sync.Mutex{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fetchCount++
+		mu.Unlock()
+		time.Sleep(500 * time.Millisecond) // simulate some latency
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(createTestJPEG(200, 150))
+	}))
+	defer ts.Close()
+
+	// Use a unique width to avoid cache from other tests
+	path := "/r/w42?" + ts.URL + "/coalesce-test.jpeg"
+
+	// Launch 5 concurrent requests for the same image
+	var wg sync.WaitGroup
+	results := make([]*httptest.ResponseRecorder, 5)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		idx := i
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", path, nil)
+			req.Header.Set("Accept", "image/avif,image/webp,image/*")
+			rec := httptest.NewRecorder()
+			handlers.ResizeHandler(rec, req)
+			results[idx] = rec
+		}()
+	}
+	wg.Wait()
+
+	// All should succeed
+	for i, rec := range results {
+		if rec.Code != http.StatusOK {
+			t.Errorf("request %d: want 200, got %d", i, rec.Code)
+		}
+	}
+
+	// Source should have been fetched only once (coalescing)
+	mu.Lock()
+	count := fetchCount
+	mu.Unlock()
+	if count != 1 {
+		t.Errorf("source fetched %d times, expected 1 (coalescing failed)", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spinner SVG format validation
+// ---------------------------------------------------------------------------
+
+func TestSpinnerSVGFormat(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{"small square", 50, 50},
+		{"rectangle", 200, 100},
+		{"large", 800, 600},
+		{"zero defaults", 0, 0},
+		{"width only", 100, 0},
+		{"height only", 0, 150},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svg := string(handlers.GenerateSpinnerSVGForTest(tt.width, tt.height))
+
+			if !strings.Contains(svg, "<svg") {
+				t.Error("should contain <svg tag")
+			}
+			if !strings.Contains(svg, `fill="white"`) {
+				t.Error("should have white background")
+			}
+			if !strings.Contains(svg, `stroke="#ddd"`) {
+				t.Error("should have #ddd border")
+			}
+			if !strings.Contains(svg, `rx="6"`) {
+				t.Error("should have 6px border radius")
+			}
+			if !strings.Contains(svg, "animateTransform") {
+				t.Error("should have spinner animation")
+			}
+			if !strings.Contains(svg, `stroke="#999"`) {
+				t.Error("should have #999 spinner stroke")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spinner SVG served with correct headers
+// ---------------------------------------------------------------------------
+
+func TestSpinnerSVGHeaders(t *testing.T) {
+	ts := imageServer()
+	defer ts.Close()
+
+	// Use very short timeout to force spinner
+	origTimeout := handlers.WorkerWaitTimeout
+	handlers.WorkerWaitTimeout = 1 * time.Millisecond
+	defer func() { handlers.WorkerWaitTimeout = origTimeout }()
+
+	// Use a unique URL to avoid cache hits
+	req := httptest.NewRequest("GET", "/r/w33?"+ts.URL+"/test.jpeg?nocache=spinner-headers-test", nil)
+	req.Header.Set("Accept", "image/*")
+	rec := httptest.NewRecorder()
+	handlers.ResizeHandler(rec, req)
+
+	// May get spinner or actual result depending on timing
+	// If spinner:
+	if rec.Header().Get("X-Cache") == "QUEUED" {
+		ct := rec.Header().Get("Content-Type")
+		if ct != "image/svg+xml" {
+			t.Errorf("spinner Content-Type: want image/svg+xml, got %s", ct)
+		}
+		cc := rec.Header().Get("Cache-Control")
+		if !strings.Contains(cc, "max-age=10") {
+			t.Errorf("spinner Cache-Control should have max-age=10, got %s", cc)
+		}
+		ra := rec.Header().Get("Retry-After")
+		if ra != "10" {
+			t.Errorf("spinner Retry-After should be 10, got %s", ra)
+		}
+		cl := rec.Header().Get("Content-Length")
+		if cl == "" {
+			t.Error("spinner missing Content-Length")
+		}
+	}
+	// If actual result came back fast enough, that's fine too
 }

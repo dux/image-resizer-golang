@@ -4,13 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	"image/gif"
-	_ "image/gif" // Register GIF decoder
 	"image/jpeg"
-	_ "image/jpeg" // Register JPEG decoder
 	"image/png"
-	_ "image/png" // Register PNG decoder
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -705,193 +700,48 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create request with headers
-	req, err := http.NewRequest("GET", srcURL, nil)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create request: %v", err), http.StatusInternalServerError)
-		return
+	// Submit to worker pool for async fetch + resize
+	job := &ResizeJob{
+		SrcURL:   srcURL,
+		Params:   params,
+		CacheKey: cacheKey,
+		UseAVIF:  useAVIF,
+		UseWebP:  useWebP,
 	}
 
-	// Add headers to avoid rate limiting
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0")
-	req.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	// NOTE: Do NOT set Accept-Encoding manually. Go's http.Client automatically
-	// handles gzip and transparently decompresses. Setting it manually disables
-	// auto-decompression, causing image.Decode to fail on compressed responses.
-	req.Header.Set("DNT", "1")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	entry := pool.Submit(job)
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		// Return error SVG
-		svgData := generateErrorSVG(params.Width, params.Height)
-		w.Header().Set("Content-Type", "image/svg+xml")
-		w.Header().Set("Cache-Control", "no-cache, max-age=60")
-		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
-		w.Header().Set("X-Cache", "MISS")
-		w.Header().Set("X-Info", fmt.Sprintf("error; fetch-failed; %v", err))
-		w.Write(svgData)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		// Return error SVG
-		svgData := generateErrorSVG(params.Width, params.Height)
-		w.Header().Set("Content-Type", "image/svg+xml")
-		w.Header().Set("Cache-Control", "no-cache, max-age=60")
-		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
-		w.Header().Set("X-Cache", "MISS")
-		w.Header().Set("X-Info", fmt.Sprintf("error; fetch-failed; status=%d", resp.StatusCode))
-		w.Write(svgData)
-		return
-	}
-
-	// Read the entire body into memory
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		// Return error SVG
-		svgData := generateErrorSVG(params.Width, params.Height)
-		w.Header().Set("Content-Type", "image/svg+xml")
-		w.Header().Set("Cache-Control", "no-cache, max-age=60")
-		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
-		w.Header().Set("X-Cache", "MISS")
-		w.Header().Set("X-Info", fmt.Sprintf("error; read-failed; %v", err))
-		w.Write(svgData)
-		return
-	}
-
-	if len(bodyBytes) == 0 {
-		// Return error SVG
-		svgData := generateErrorSVG(params.Width, params.Height)
-		w.Header().Set("Content-Type", "image/svg+xml")
-		w.Header().Set("Cache-Control", "no-cache, max-age=60")
-		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
-		w.Header().Set("X-Cache", "MISS")
-		w.Header().Set("X-Info", "error; empty-data")
-		w.Write(svgData)
-		return
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-
-	if strings.Contains(contentType, "svg") || strings.HasSuffix(strings.ToLower(srcURL), ".svg") {
-		handleSVG(w, srcURL, bodyBytes, params.Width)
-		return
-	}
-
-	// Create a new reader from the bytes for decoding
-	img, format, err := image.Decode(bytes.NewReader(bodyBytes))
-	if err != nil {
-		// Return error SVG
-		svgData := generateErrorSVG(params.Width, params.Height)
-		w.Header().Set("Content-Type", "image/svg+xml")
-		w.Header().Set("Cache-Control", "no-cache, max-age=60")
-		w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
-		w.Header().Set("X-Cache", "MISS")
-		w.Header().Set("X-Info", fmt.Sprintf("error; decode-failed; %v", err))
-		w.Write(svgData)
-		return
-	}
-
-	// Don't cache original image anymore - only cache resized versions
-
-	// Resize if needed
-	img = resizeImage(img, params)
-
-	// Always try to encode as AVIF first (best compression), then WebP, then original format
-	// GIF is excluded from conversion to preserve animation potential
-	var outputData []byte
-	var mimeType string
-	var outputFormat string
-	var buf bytes.Buffer
-
-	if format != "gif" && useAVIF {
-		// Try AVIF encoding (best compression, preferred)
-		log.Printf("Attempting AVIF encoding for format: %s", format)
-		data, err := encodeAVIF(img, WebPQuality)
-		if err == nil {
-			log.Printf("AVIF encoding successful, output size: %.1f KB", float64(len(data))/1024.0)
-			outputData = data
-			mimeType = "image/avif"
-			outputFormat = "avif"
-		} else {
-			log.Printf("AVIF encoding failed, trying WebP fallback: %v", err)
-			// Fall through to WebP
-			if useWebP {
-				data, err := encodeWebP(img, WebPQuality)
-				if err == nil {
-					outputData = data
-					mimeType = "image/webp"
-					outputFormat = "webp"
-				} else {
-					log.Printf("WebP encoding also failed, falling back to original format: %v", err)
-					encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-					outputData = buf.Bytes()
-				}
-			} else {
-				encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-				outputData = buf.Bytes()
-			}
+	// Wait for worker result or timeout
+	select {
+	case <-entry.done:
+		result := entry.result
+		if result.Err != nil {
+			// Worker completed with error - return error SVG
+			svgData := generateErrorSVG(params.Width, params.Height)
+			w.Header().Set("Content-Type", "image/svg+xml")
+			w.Header().Set("Cache-Control", "no-cache, max-age=60")
+			w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
+			w.Header().Set("X-Cache", "MISS")
+			w.Header().Set("X-Info", fmt.Sprintf("error; %v", result.Err))
+			w.Write(svgData)
+			return
 		}
-	} else if format != "gif" && useWebP {
-		// Try WebP encoding for non-GIF formats when client supports it
-		log.Printf("Attempting WebP encoding for format: %s", format)
-		data, err := encodeWebP(img, WebPQuality)
-		if err == nil {
-			log.Printf("WebP encoding successful with Google libwebp, output size: %.1f KB", float64(len(data))/1024.0)
-			outputData = data
-			mimeType = "image/webp"
-			outputFormat = "webp"
+
+		// Serve the resized image
+		w.Header().Set("Content-Type", result.ContentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(result.Data)))
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
+		if skipCache {
+			w.Header().Set("X-Cache", "BYPASS")
 		} else {
-			log.Printf("WebP encoding failed, falling back to original format: %v", err)
-			encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-			outputData = buf.Bytes()
+			w.Header().Set("X-Cache", "MISS")
 		}
-	} else if format != "gif" {
-		// Client doesn't support WebP or AVIF - encode in original format
-		encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-		outputData = buf.Bytes()
-	} else {
-		// GIF: note that animation is NOT preserved - only the first frame is kept
-		// image.Decode only decodes the first frame of animated GIFs
-		mimeType = "image/gif"
-		outputFormat = "gif"
-		gif.Encode(&buf, img, &gif.Options{})
-		outputData = buf.Bytes()
-	}
+		w.Header().Set("X-Info", result.Info)
+		w.Write(result.Data)
 
-	// Cache resized image if any transformation was applied
-	if params.Width > 0 || params.Height > 0 {
-		go func() {
-			if err := database.CacheImage(srcURL, cacheKey, outputData, mimeType, outputFormat); err != nil {
-				log.Printf("Failed to cache resized image: %v", err)
-			}
-		}()
+	case <-time.After(WorkerWaitTimeout):
+		// Worker still processing - return spinner placeholder
+		log.Printf("Worker timeout for %s (key: %s), returning spinner", srcURL, cacheKey)
+		serveSpinnerSVG(w, params)
 	}
-
-	// Send response
-	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(outputData)))
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
-	if skipCache {
-		w.Header().Set("X-Cache", "BYPASS")
-	} else {
-		w.Header().Set("X-Cache", "MISS")
-	}
-	w.Header().Set("X-Info", fmt.Sprintf("fresh-fetch; params=%s; input=%s; output=%s", params.CacheKey, format, outputFormat))
-	w.Write(outputData)
-}
-
-func handleSVG(w http.ResponseWriter, srcURL string, svgData []byte, width int) {
-	// Return SVG without manipulation
-	w.Header().Set("Content-Type", "image/svg+xml")
-	w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
-	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
-	w.Header().Set("X-Cache", "MISS")
-	w.Header().Set("X-Info", "fresh-fetch; format=svg; no-manipulation")
-	w.Write(svgData)
 }
