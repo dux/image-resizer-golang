@@ -49,10 +49,22 @@ type workerTask struct {
 	key   string
 }
 
+// sourceResult tracks an in-progress source fetch.
+// Multiple workers needing the same source URL share the same entry.
+type sourceResult struct {
+	done    chan struct{} // closed when source is ready
+	img     image.Image   // decoded source at max size (nil for SVG)
+	format  string        // original format: "jpeg", "png", "gif", etc.
+	isSVG   bool
+	svgData []byte // raw SVG bytes (only if isSVG)
+	err     error
+}
+
 // WorkerPool manages a fixed number of resize worker goroutines
 type WorkerPool struct {
-	jobs     chan *workerTask
-	inflight sync.Map // string -> *inflightEntry
+	jobs           chan *workerTask
+	inflight       sync.Map // string -> *inflightEntry (resize job coalescing)
+	sourceInflight sync.Map // string -> *sourceResult (source fetch coalescing)
 }
 
 // WorkerWaitTimeout is how long the HTTP handler waits for a worker result
@@ -151,12 +163,84 @@ func (p *WorkerPool) processTask(task *workerTask) {
 	p.inflight.Delete(task.key)
 }
 
-// fetchAndResize downloads a remote image, decodes, resizes, and encodes it.
-// Respects the provided context for cancellation/timeout.
-func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, useAVIF, useWebP bool) *ResizeResult {
+// ---------------------------------------------------------------------------
+// Source caching: download once, resize many
+// ---------------------------------------------------------------------------
+
+// ensureSource returns the decoded source image for a URL, either from
+// DB cache or by fetching from remote. Concurrent requests for the same
+// source URL are coalesced - only one goroutine fetches.
+func (p *WorkerPool) ensureSource(ctx context.Context, srcURL string) *sourceResult {
+	// 1. Check DB cache for source
+	cachedData, _, cachedFormat, err := database.GetCachedImage(srcURL, "source")
+	if err == nil && cachedData != nil {
+		if cachedFormat == "svg" {
+			return &sourceResult{isSVG: true, svgData: cachedData, format: "svg"}
+		}
+		img, _, err := image.Decode(bytes.NewReader(cachedData))
+		if err == nil {
+			log.Printf("Source cache HIT for %s (format: %s)", srcURL, cachedFormat)
+			return &sourceResult{img: img, format: cachedFormat}
+		}
+		log.Printf("Source cache decode failed for %s, re-fetching: %v", srcURL, err)
+	}
+
+	// 2. Coalesce concurrent source fetches for the same URL
+	newEntry := &sourceResult{done: make(chan struct{})}
+	actual, loaded := p.sourceInflight.LoadOrStore(srcURL, newEntry)
+	entry := actual.(*sourceResult)
+
+	if loaded {
+		// Another worker is already fetching this source - wait
+		log.Printf("Source fetch coalescing for %s", srcURL)
+		select {
+		case <-entry.done:
+			return entry
+		case <-ctx.Done():
+			return &sourceResult{err: fmt.Errorf("source-wait-timeout; %v", ctx.Err())}
+		}
+	}
+
+	// 3. We're the first - fetch from remote
+	fetchSourceRemote(ctx, srcURL, entry)
+
+	// 4. Notify all waiting workers (they can start resizing immediately)
+	close(entry.done)
+
+	// 5. Cache source to DB synchronously (before cleanup, so next request sees it)
+	if entry.err == nil {
+		if entry.isSVG {
+			if err := database.CacheImage(srcURL, "source", entry.svgData, "image/svg+xml", "svg"); err != nil {
+				log.Printf("Failed to cache source SVG: %v", err)
+			}
+		} else {
+			data, err := encodeAVIF(entry.img, AVIFQuality)
+			if err == nil {
+				// Store with original format (e.g. "jpeg") so resize decisions work correctly
+				if err := database.CacheImage(srcURL, "source", data, "image/avif", entry.format); err != nil {
+					log.Printf("Failed to cache source image: %v", err)
+				} else {
+					log.Printf("Source cached for %s (original: %s, stored as AVIF, %.1f KB)", srcURL, entry.format, float64(len(data))/1024.0)
+				}
+			} else {
+				log.Printf("Failed to encode source as AVIF for caching: %v", err)
+			}
+		}
+	}
+
+	// 6. Remove from inflight so future requests check DB cache first
+	p.sourceInflight.Delete(srcURL)
+
+	return entry
+}
+
+// fetchSourceRemote downloads an image from a remote URL, decodes it,
+// enforces max size, and populates the sourceResult entry.
+func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) {
 	req, err := http.NewRequestWithContext(ctx, "GET", srcURL, nil)
 	if err != nil {
-		return &ResizeResult{Err: fmt.Errorf("create-request; %v", err)}
+		entry.err = fmt.Errorf("create-request; %v", err)
+		return
 	}
 
 	// Browser-like headers to avoid rate limiting
@@ -170,43 +254,77 @@ func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, us
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return &ResizeResult{Err: fmt.Errorf("fetch-failed; %v", err)}
+		entry.err = fmt.Errorf("fetch-failed; %v", err)
+		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return &ResizeResult{Err: fmt.Errorf("fetch-failed; status=%d", resp.StatusCode)}
+		entry.err = fmt.Errorf("fetch-failed; status=%d", resp.StatusCode)
+		return
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return &ResizeResult{Err: fmt.Errorf("read-failed; %v", err)}
+		entry.err = fmt.Errorf("read-failed; %v", err)
+		return
 	}
 
 	if len(bodyBytes) == 0 {
-		return &ResizeResult{Err: fmt.Errorf("empty-data")}
+		entry.err = fmt.Errorf("empty-data")
+		return
 	}
 
 	contentType := resp.Header.Get("Content-Type")
 
-	// SVG passthrough - return without manipulation
+	// SVG passthrough
 	if strings.Contains(contentType, "svg") || strings.HasSuffix(strings.ToLower(srcURL), ".svg") {
-		return &ResizeResult{
-			Data:        bodyBytes,
-			ContentType: "image/svg+xml",
-			Format:      "svg",
-			Info:        "fresh-fetch; format=svg; no-manipulation",
-		}
+		entry.isSVG = true
+		entry.svgData = bodyBytes
+		entry.format = "svg"
+		return
 	}
 
 	// Decode image
 	img, format, err := image.Decode(bytes.NewReader(bodyBytes))
 	if err != nil {
-		return &ResizeResult{Err: fmt.Errorf("decode-failed; %v", err)}
+		entry.err = fmt.Errorf("decode-failed; %v", err)
+		return
 	}
 
-	// Resize
-	img = resizeImage(img, params)
+	// Enforce max size (1600px default) for the cached source
+	img = enforceMaxSize(img)
+
+	entry.img = img
+	entry.format = format
+}
+
+// ---------------------------------------------------------------------------
+// fetchAndResize: uses ensureSource for source caching + coalescing
+// ---------------------------------------------------------------------------
+
+// fetchAndResize gets the source image (from cache or remote), resizes, and encodes.
+// Respects the provided context for cancellation/timeout.
+func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, useAVIF, useWebP bool) *ResizeResult {
+	// Get source (cached or fresh, coalesced across concurrent requests)
+	source := pool.ensureSource(ctx, srcURL)
+	if source.err != nil {
+		return &ResizeResult{Err: source.err}
+	}
+
+	// SVG passthrough - no resize
+	if source.isSVG {
+		return &ResizeResult{
+			Data:        source.svgData,
+			ContentType: "image/svg+xml",
+			Format:      "svg",
+			Info:        "source-cache; format=svg; no-manipulation",
+		}
+	}
+
+	// Resize from source
+	format := source.format
+	img := resizeImage(source.img, params)
 
 	// Encode to best available format
 	var outputData []byte
@@ -268,9 +386,13 @@ func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, us
 		Data:        outputData,
 		ContentType: mimeType,
 		Format:      outputFormat,
-		Info:        fmt.Sprintf("fresh-fetch; params=%s; input=%s; output=%s", params.CacheKey, format, outputFormat),
+		Info:        fmt.Sprintf("source-cache; params=%s; input=%s; output=%s", params.CacheKey, format, outputFormat),
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SVG generators: spinner (loading) and error placeholders
+// ---------------------------------------------------------------------------
 
 // generateSpinnerSVG creates a loading placeholder SVG with
 // white background, #ddd 1px border, 6px radius, and animated spinner
@@ -368,6 +490,10 @@ func generateErrorSVG(width, height int) []byte {
 
 	return []byte(svg)
 }
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
 
 // GenerateErrorSVGForTest exposes generateErrorSVG for tests
 func GenerateErrorSVGForTest(width, height int) []byte {

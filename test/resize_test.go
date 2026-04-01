@@ -1385,3 +1385,148 @@ func TestSpinnerSVGHeaders(t *testing.T) {
 	}
 	// If actual result came back fast enough, that's fine too
 }
+
+// ---------------------------------------------------------------------------
+// Source caching: source entry created in DB alongside resized variant
+// ---------------------------------------------------------------------------
+
+func TestSourceCaching(t *testing.T) {
+	ts := imageServer()
+	defer ts.Close()
+
+	url := ts.URL + "/test.jpeg"
+
+	// First request creates both source cache and resized cache
+	req := httptest.NewRequest("GET", "/r/w55?"+url, nil)
+	req.Header.Set("Accept", "image/avif,image/webp,image/*")
+	rec := httptest.NewRecorder()
+	handlers.ResizeHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+
+	// Wait for async cache writes
+	time.Sleep(500 * time.Millisecond)
+
+	// Check that source cache entry exists
+	sourceData, _, sourceFormat, err := database.GetCachedImage(url, "source")
+	if err != nil {
+		t.Fatalf("source cache lookup error: %v", err)
+	}
+	if sourceData == nil {
+		t.Fatal("source cache entry should exist after first resize")
+	}
+	if sourceFormat != "jpeg" {
+		t.Errorf("source format should preserve original 'jpeg', got '%s'", sourceFormat)
+	}
+
+	// Check that resized cache entry also exists
+	resizedData, _, _, err := database.GetCachedImage(url, "w_55_avif")
+	if err != nil {
+		t.Fatalf("resized cache lookup error: %v", err)
+	}
+	if resizedData == nil {
+		t.Fatal("resized cache entry should exist")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Source coalescing: multiple sizes for same URL = one source fetch
+// ---------------------------------------------------------------------------
+
+func TestSourceCoalescing(t *testing.T) {
+	fetchCount := 0
+	mu := sync.Mutex{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fetchCount++
+		mu.Unlock()
+		time.Sleep(200 * time.Millisecond) // simulate network latency
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(createTestJPEG(200, 150))
+	}))
+	defer ts.Close()
+
+	// Launch 5 concurrent requests with DIFFERENT sizes for the same source
+	var wg sync.WaitGroup
+	sizes := []string{"w61", "w62", "w63", "w64", "w65"}
+	results := make([]*httptest.ResponseRecorder, len(sizes))
+	for i, size := range sizes {
+		wg.Add(1)
+		idx := i
+		sz := size
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/r/"+sz+"?"+ts.URL+"/source-coalesce.jpeg", nil)
+			req.Header.Set("Accept", "image/avif,image/webp,image/*")
+			rec := httptest.NewRecorder()
+			handlers.ResizeHandler(rec, req)
+			results[idx] = rec
+		}()
+	}
+	wg.Wait()
+
+	// All should succeed
+	for i, rec := range results {
+		if rec.Code != http.StatusOK {
+			t.Errorf("request %d (%s): want 200, got %d", i, sizes[i], rec.Code)
+		}
+	}
+
+	// Source should have been fetched only ONCE (source coalescing)
+	mu.Lock()
+	count := fetchCount
+	mu.Unlock()
+	if count != 1 {
+		t.Errorf("source fetched %d times, expected 1 (source coalescing failed)", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Source cache reuse: second resize uses cached source, no re-fetch
+// ---------------------------------------------------------------------------
+
+func TestSourceCacheReuse(t *testing.T) {
+	fetchCount := 0
+	mu := sync.Mutex{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fetchCount++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(createTestJPEG(200, 150))
+	}))
+	defer ts.Close()
+
+	url := ts.URL + "/reuse-test.jpeg"
+
+	// First request: fetches source, caches source + resized
+	req1 := httptest.NewRequest("GET", "/r/w71?"+url, nil)
+	req1.Header.Set("Accept", "image/avif,image/webp,image/*")
+	rec1 := httptest.NewRecorder()
+	handlers.ResizeHandler(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request: want 200, got %d", rec1.Code)
+	}
+
+	// Wait for cache writes
+	time.Sleep(500 * time.Millisecond)
+
+	// Second request: different size, should use cached source
+	req2 := httptest.NewRequest("GET", "/r/w72?"+url, nil)
+	req2.Header.Set("Accept", "image/avif,image/webp,image/*")
+	rec2 := httptest.NewRecorder()
+	handlers.ResizeHandler(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second request: want 200, got %d", rec2.Code)
+	}
+
+	// Source should have been fetched only once
+	mu.Lock()
+	count := fetchCount
+	mu.Unlock()
+	if count != 1 {
+		t.Errorf("source fetched %d times, expected 1 (source cache reuse failed)", count)
+	}
+}

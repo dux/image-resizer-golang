@@ -143,6 +143,13 @@
         color: #999;
         white-space: nowrap;
     }
+    .source-row td {
+        background: #fafaf6;
+    }
+    .badge-source {
+        background: #f0ebe0;
+        color: #8a7a5a;
+    }
     .pagination {
         display: flex;
         justify-content: center;
@@ -232,14 +239,14 @@
             </thead>
             <tbody>
                 {{range .Images}}
-                <tr id="row-{{.ID}}">
+                <tr id="row-{{.ID}}" {{if eq .CacheKey "source"}}class="source-row"{{end}}>
                     <td data-preview="/cache/preview?id={{.ID}}">
                         <img class="thumb" src="/cache/preview?id={{.ID}}" alt="" loading="lazy">
                     </td>
                     <td class="url-cell" title="{{.URL}}" data-preview="{{.URL}}">
                         <a href="{{.URL}}" target="_blank">{{.URL}}</a>
                     </td>
-                    <td><span class="badge" style="background:#f0f0f0;color:#555;">{{.CacheKey}}</span></td>
+                    <td>{{if eq .CacheKey "source"}}<span class="badge badge-source">source</span>{{else}}<span class="badge" style="background:#f0f0f0;color:#555;">{{.CacheKey}}</span>{{end}}</td>
                     <td>
                         <span class="badge badge-{{.Format}}">{{.Format}}</span>
                     </td>
