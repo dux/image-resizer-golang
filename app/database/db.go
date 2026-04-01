@@ -254,14 +254,46 @@ type CachedImageInfo struct {
 	CreatedAt    string `json:"created_at"`
 }
 
-// ListCachedImages returns metadata for all cached images (no blob data)
-func ListCachedImages() ([]CachedImageInfo, error) {
+// CachedImagePage holds a page of cached images plus pagination info
+type CachedImagePage struct {
+	Images     []CachedImageInfo
+	Page       int
+	PerPage    int
+	TotalCount int
+	TotalPages int
+}
+
+// ListCachedImages returns a paginated list of cached image metadata (no blob data)
+func ListCachedImages(page, perPage int) (*CachedImagePage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 50
+	}
+
+	// Get total count
+	var totalCount int
+	if err := DB.QueryRow("SELECT COUNT(*) FROM image_cache").Scan(&totalCount); err != nil {
+		return nil, fmt.Errorf("failed to count cached images: %w", err)
+	}
+
+	totalPages := (totalCount + perPage - 1) / perPage
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	offset := (page - 1) * perPage
 	query := `
 		SELECT id, url, cache_key, content_type, COALESCE(response_format, ''), length(resized_data), created_at
 		FROM image_cache
 		ORDER BY created_at DESC
+		LIMIT ? OFFSET ?
 	`
-	rows, err := DB.Query(query)
+	rows, err := DB.Query(query, perPage, offset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list cached images: %w", err)
 	}
@@ -280,7 +312,25 @@ func ListCachedImages() ([]CachedImageInfo, error) {
 		}
 		images = append(images, img)
 	}
-	return images, nil
+
+	return &CachedImagePage{
+		Images:     images,
+		Page:       page,
+		PerPage:    perPage,
+		TotalCount: totalCount,
+		TotalPages: totalPages,
+	}, nil
+}
+
+// GetCachedImageByID returns the raw blob data for a cached image by ID
+func GetCachedImageByID(id int) ([]byte, string, error) {
+	var data []byte
+	var contentType string
+	err := DB.QueryRow("SELECT resized_data, content_type FROM image_cache WHERE id = ?", id).Scan(&data, &contentType)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, contentType, nil
 }
 
 // DeleteCachedImage deletes a single cached image by ID

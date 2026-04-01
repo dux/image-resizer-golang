@@ -236,9 +236,16 @@ type ToggleResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// CacheExplorerHandler shows all cached images with metadata
+// CacheExplorerHandler shows cached images with metadata, paginated
 func CacheExplorerHandler(w http.ResponseWriter, r *http.Request) {
-	images, err := database.ListCachedImages()
+	page := 1
+	if p := r.URL.Query().Get("page"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil && v > 0 {
+			page = v
+		}
+	}
+
+	result, err := database.ListCachedImages(page, 50)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to list cached images: %v", err), http.StatusInternalServerError)
 		return
@@ -247,7 +254,7 @@ func CacheExplorerHandler(w http.ResponseWriter, r *http.Request) {
 	// Check if client wants JSON
 	if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(images)
+		json.NewEncoder(w).Encode(result)
 		return
 	}
 
@@ -256,18 +263,36 @@ func CacheExplorerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := struct {
-		Images []database.CachedImageInfo
-		Count  int
-	}{
-		Images: images,
-		Count:  len(images),
-	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := cacheTemplate.Execute(w, data); err != nil {
+	if err := cacheTemplate.Execute(w, result); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to render template: %v", err), http.StatusInternalServerError)
 	}
+}
+
+// CachePreviewHandler serves a cached image blob directly by ID
+// This avoids triggering a new resize via /r/ routes
+func CachePreviewHandler(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "Missing id", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	data, contentType, err := database.GetCachedImageByID(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Write(data)
 }
 
 // DeleteCacheItemHandler deletes a single cached image by ID

@@ -57,6 +57,7 @@ func main() {
 	mux.HandleFunc("/config/clear-cache", handlers.BasicAuth(handlers.ClearCacheHandler))
 	mux.HandleFunc("/config/delete-cache-item", handlers.BasicAuth(handlers.DeleteCacheItemHandler))
 	mux.HandleFunc("/cache", handlers.BasicAuth(handlers.CacheExplorerHandler))
+	mux.HandleFunc("/cache/preview", handlers.BasicAuth(handlers.CachePreviewHandler))
 	mux.HandleFunc("/logs", handlers.BasicAuth(handlers.LogsHandler))
 	mux.HandleFunc("/ws/logs", handlers.LogsWebSocketHandler)
 	mux.HandleFunc("/favicon.ico", handlers.FaviconHandler)

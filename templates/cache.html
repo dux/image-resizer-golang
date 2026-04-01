@@ -129,6 +129,46 @@
         color: #999;
         white-space: nowrap;
     }
+    .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        margin-top: 24px;
+        padding-top: 16px;
+        border-top: 1px solid #eee;
+    }
+    .pagination a, .pagination span {
+        display: inline-block;
+        padding: 6px 14px;
+        border-radius: 4px;
+        font-size: 0.9em;
+        text-decoration: none;
+    }
+    .pagination a {
+        color: #4dabf7;
+        border: 1px solid #ddd;
+    }
+    .pagination a:hover {
+        background: #f0f7ff;
+        border-color: #4dabf7;
+    }
+    .pagination .current {
+        background: #4dabf7;
+        color: white;
+        border: 1px solid #4dabf7;
+    }
+    .pagination .disabled {
+        color: #ccc;
+        border: 1px solid #eee;
+        pointer-events: none;
+    }
+    .pagination .info {
+        color: #888;
+        font-size: 0.85em;
+        border: none;
+        padding: 6px 8px;
+    }
 </style>
 {{end}}
 
@@ -138,7 +178,7 @@
         <div class="cache-header">
             <div>
                 <h1>Cache Explorer</h1>
-                <span class="cache-count">{{.Count}} cached images</span>
+                <span class="cache-count">{{.TotalCount}} cached images</span>
             </div>
             {{if .Images}}
             <button class="btn-clear-all" onclick="clearAllCache()">Clear All Cache</button>
@@ -162,7 +202,7 @@
                 {{range .Images}}
                 <tr id="row-{{.ID}}">
                     <td>
-                        <img class="thumb" src="/r/c40?{{.URL}}" alt="" loading="lazy">
+                        <img class="thumb" src="/cache/preview?id={{.ID}}" alt="" loading="lazy">
                     </td>
                     <td class="url-cell" title="{{.URL}}">
                         <a href="{{.URL}}" target="_blank">{{.URL}}</a>
@@ -180,6 +220,25 @@
                 {{end}}
             </tbody>
         </table>
+
+        {{if gt .TotalPages 1}}
+        <div class="pagination">
+            {{if gt .Page 1}}
+                <a href="/cache?page={{subtract .Page 1}}">&laquo; Prev</a>
+            {{else}}
+                <span class="disabled">&laquo; Prev</span>
+            {{end}}
+
+            <span class="info">Page {{.Page}} of {{.TotalPages}}</span>
+
+            {{if lt .Page .TotalPages}}
+                <a href="/cache?page={{add .Page 1}}">Next &raquo;</a>
+            {{else}}
+                <span class="disabled">Next &raquo;</span>
+            {{end}}
+        </div>
+        {{end}}
+
         {{else}}
         <div class="empty-state">
             <p style="font-size: 1.2em; margin-bottom: 8px;">Cache is empty</p>

@@ -6,6 +6,12 @@ import (
 	"net/http"
 )
 
+// Template functions for arithmetic in templates
+var templateFuncs = template.FuncMap{
+	"add":      func(a, b int) int { return a + b },
+	"subtract": func(a, b int) int { return a - b },
+}
+
 // Pre-parsed templates (initialized once at startup)
 var (
 	homeTemplate   *template.Template
@@ -38,7 +44,7 @@ func init() {
 		log.Printf("Warning: failed to parse logs template: %v", err)
 	}
 
-	cacheTemplate, err = template.ParseFiles("templates/layout.html", "templates/cache.html")
+	cacheTemplate, err = template.New("layout.html").Funcs(templateFuncs).ParseFiles("templates/layout.html", "templates/cache.html")
 	if err != nil {
 		log.Printf("Warning: failed to parse cache template: %v", err)
 	}
