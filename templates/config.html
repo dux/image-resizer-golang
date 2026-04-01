@@ -212,7 +212,11 @@
 <script>
     function clearCache() {
         if (confirm('Delete ALL cached images? This cannot be undone.')) {
-            fetch('/config/clear-cache', { method: 'POST' })
+            fetch('/config/clear-cache', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ period: 'all' })
+            })
             .then(r => r.json())
             .then(data => {
                 if (data.success) {

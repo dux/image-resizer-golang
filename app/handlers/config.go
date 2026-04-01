@@ -329,14 +329,38 @@ func DeleteCacheItemHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ToggleResponse{Success: true})
 }
 
-// ClearCacheHandler deletes all cached images from the database
+// ClearCacheHandler deletes cached images based on period: "1h", "24h", "7d", "all"
 func ClearCacheHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	result, err := database.DB.Exec("DELETE FROM image_cache")
+	// Parse period from body
+	period := "all"
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+	if err == nil && len(body) > 0 {
+		var req struct {
+			Period string `json:"period"`
+		}
+		if json.Unmarshal(body, &req) == nil && req.Period != "" {
+			period = req.Period
+		}
+	}
+
+	var query string
+	switch period {
+	case "1h":
+		query = "DELETE FROM image_cache WHERE created_at >= datetime('now', '-1 hour')"
+	case "24h":
+		query = "DELETE FROM image_cache WHERE created_at >= datetime('now', '-1 day')"
+	case "7d":
+		query = "DELETE FROM image_cache WHERE created_at < datetime('now', '-7 days')"
+	default:
+		query = "DELETE FROM image_cache"
+	}
+
+	result, err := database.DB.Exec(query)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ToggleResponse{
@@ -347,7 +371,7 @@ func ClearCacheHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rowsAffected, _ := result.RowsAffected()
-	log.Printf("Cache cleared: %d images removed", rowsAffected)
+	log.Printf("Cache cleared (%s): %d images removed", period, rowsAffected)
 
 	// Vacuum to reclaim disk space
 	go func() {
