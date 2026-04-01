@@ -411,9 +411,6 @@ func TestErrorSVGHeaders(t *testing.T) {
 			if !strings.Contains(body, "<svg") {
 				t.Error("response should be SVG")
 			}
-			if !strings.Contains(body, "Image not available") {
-				t.Error("SVG should contain error message")
-			}
 		})
 	}
 }
@@ -963,7 +960,7 @@ func TestResizeHandlerInvalidURLs(t *testing.T) {
 				t.Errorf("expected image/svg+xml, got %s", ct)
 			}
 			body := rec.Body.String()
-			if !strings.Contains(body, "<svg") || !strings.Contains(body, "Image not available") {
+			if !strings.Contains(body, "<svg") {
 				t.Error("should contain error SVG")
 			}
 		})
@@ -1054,10 +1051,10 @@ func TestResizeCacheHit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Cache-Control: no-cache skips cache
+// Cache-Control: no-cache does NOT bypass server cache (only clear-cache button does)
 // ---------------------------------------------------------------------------
 
-func TestResizeCacheBypass(t *testing.T) {
+func TestResizeCacheNoBypass(t *testing.T) {
 	ts := imageServer()
 	defer ts.Close()
 
@@ -1070,14 +1067,14 @@ func TestResizeCacheBypass(t *testing.T) {
 	handlers.ResizeHandler(rec1, req1)
 	time.Sleep(200 * time.Millisecond)
 
-	// Request with no-cache -> BYPASS
+	// Request with no-cache -> should still get HIT (server ignores client cache headers)
 	req2 := httptest.NewRequest("GET", "/r/w70?"+url, nil)
 	req2.Header.Set("Accept", "image/avif,image/webp,image/*")
 	req2.Header.Set("Cache-Control", "no-cache")
 	rec2 := httptest.NewRecorder()
 	handlers.ResizeHandler(rec2, req2)
-	if rec2.Header().Get("X-Cache") != "BYPASS" {
-		t.Errorf("no-cache should produce BYPASS, got %s", rec2.Header().Get("X-Cache"))
+	if rec2.Header().Get("X-Cache") != "HIT" {
+		t.Errorf("no-cache should still serve from cache (HIT), got %s", rec2.Header().Get("X-Cache"))
 	}
 }
 

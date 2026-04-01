@@ -23,8 +23,8 @@ import (
 	_ "golang.org/x/image/webp" // Register WebP decoder
 )
 
-// WebPQuality is the quality setting for WebP encoding
-var WebPQuality int
+// AVIFQuality is the quality setting for image encoding (AVIF, WebP, JPEG fallback)
+var AVIFQuality int
 
 // MaxSize is the maximum width/height allowed for images
 var MaxSize int
@@ -52,13 +52,13 @@ func init() {
 		quality, err := strconv.Atoi(qualityStr)
 		if err != nil || quality < 10 || quality > 100 {
 			log.Printf("Invalid QUALITY value '%s', must be 10-100, using default 90", qualityStr)
-			WebPQuality = 90
+			AVIFQuality = 90
 		} else {
-			WebPQuality = quality
-			log.Printf("WebP quality set to %d from QUALITY env", WebPQuality)
+			AVIFQuality = quality
+			log.Printf("AVIF quality set to %d from QUALITY env", AVIFQuality)
 		}
 	} else {
-		WebPQuality = 90
+		AVIFQuality = 90
 	}
 
 	// Read MAX_SIZE from environment or use default
@@ -119,7 +119,7 @@ func encodeFallback(format string, img image.Image, buf *bytes.Buffer, mimeType 
 	case "jpeg", "jpg":
 		*mimeType = "image/jpeg"
 		*outputFormat = "jpeg"
-		jpeg.Encode(buf, img, &jpeg.Options{Quality: WebPQuality})
+		jpeg.Encode(buf, img, &jpeg.Options{Quality: AVIFQuality})
 	case "png":
 		*mimeType = "image/png"
 		*outputFormat = "png"
@@ -127,7 +127,7 @@ func encodeFallback(format string, img image.Image, buf *bytes.Buffer, mimeType 
 	default:
 		*mimeType = "image/jpeg"
 		*outputFormat = "jpeg"
-		jpeg.Encode(buf, img, &jpeg.Options{Quality: WebPQuality})
+		jpeg.Encode(buf, img, &jpeg.Options{Quality: AVIFQuality})
 	}
 }
 
@@ -382,28 +382,6 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 	}
 
 	return params, nil
-}
-
-// generateErrorSVG creates a gray placeholder SVG
-func generateErrorSVG(width, height int) []byte {
-	// If no dimensions specified, use a default size
-	if width == 0 && height == 0 {
-		width = 400
-		height = 300
-	} else if width == 0 {
-		width = height
-	} else if height == 0 {
-		height = width
-	}
-
-	svg := fmt.Sprintf(`<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg">
-  <rect width="100%%" height="100%%" fill="#eeeeee"/>
-  <text x="50%%" y="50%%" text-anchor="middle" dominant-baseline="middle" fill="#999999" font-family="Arial, sans-serif" font-size="16">
-    Image not available
-  </text>
-</svg>`, width, height)
-
-	return []byte(svg)
 }
 
 // resizeImage applies the resize parameters to the image
@@ -673,31 +651,20 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheKey := params.CacheKey + "_" + formatSuffix
 
-	// Check if client wants fresh content (force refresh)
-	skipCache := false
-	cacheControl := r.Header.Get("Cache-Control")
-	pragma := r.Header.Get("Pragma")
-	if strings.Contains(cacheControl, "no-cache") || strings.Contains(cacheControl, "no-store") || pragma == "no-cache" {
-		skipCache = true
-		log.Printf("Skipping cache due to client headers (Cache-Control: %s, Pragma: %s)", cacheControl, pragma)
+	// Always check cache first - client headers do not bypass server cache
+	cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheKey)
+	if err != nil {
+		log.Printf("Error checking cache: %v", err)
 	}
-
-	// Check cache first (unless client requested fresh content)
-	if !skipCache {
-		cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheKey)
-		if err != nil {
-			log.Printf("Error checking cache: %v", err)
-		}
-		if cachedData != nil {
-			log.Printf("Serving cached image for %s (params: %s)", srcURL, params.CacheKey)
-			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Content-Length", strconv.Itoa(len(cachedData)))
-			w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
-			w.Header().Set("X-Cache", "HIT")
-			w.Header().Set("X-Info", fmt.Sprintf("from-cache; params=%s; format=%s", params.CacheKey, responseFormat))
-			w.Write(cachedData)
-			return
-		}
+	if cachedData != nil {
+		log.Printf("Serving cached image for %s (params: %s)", srcURL, params.CacheKey)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(cachedData)))
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
+		w.Header().Set("X-Cache", "HIT")
+		w.Header().Set("X-Info", fmt.Sprintf("from-cache; params=%s; format=%s", params.CacheKey, responseFormat))
+		w.Write(cachedData)
+		return
 	}
 
 	// Submit to worker pool for async fetch + resize
@@ -731,11 +698,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", result.ContentType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(result.Data)))
 		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
-		if skipCache {
-			w.Header().Set("X-Cache", "BYPASS")
-		} else {
-			w.Header().Set("X-Cache", "MISS")
-		}
+		w.Header().Set("X-Cache", "MISS")
 		w.Header().Set("X-Info", result.Info)
 		w.Write(result.Data)
 

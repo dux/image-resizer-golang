@@ -242,6 +242,56 @@ func CacheImage(url string, cacheKey string, resizedData []byte, contentType, re
 	return fmt.Errorf("failed to cache image after retries: %w", err)
 }
 
+// CachedImageInfo holds metadata about a cached image (without the blob data)
+type CachedImageInfo struct {
+	ID           int    `json:"id"`
+	URL          string `json:"url"`
+	CacheKey     string `json:"cache_key"`
+	ContentType  string `json:"content_type"`
+	Format       string `json:"format"`
+	Size         int    `json:"size"`
+	SizeReadable string `json:"size_readable"`
+	CreatedAt    string `json:"created_at"`
+}
+
+// ListCachedImages returns metadata for all cached images (no blob data)
+func ListCachedImages() ([]CachedImageInfo, error) {
+	query := `
+		SELECT id, url, cache_key, content_type, COALESCE(response_format, ''), length(resized_data), created_at
+		FROM image_cache
+		ORDER BY created_at DESC
+	`
+	rows, err := DB.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cached images: %w", err)
+	}
+	defer rows.Close()
+
+	var images []CachedImageInfo
+	for rows.Next() {
+		var img CachedImageInfo
+		if err := rows.Scan(&img.ID, &img.URL, &img.CacheKey, &img.ContentType, &img.Format, &img.Size, &img.CreatedAt); err != nil {
+			continue
+		}
+		if img.Size >= 1024*1024 {
+			img.SizeReadable = fmt.Sprintf("%.1f MB", float64(img.Size)/(1024*1024))
+		} else {
+			img.SizeReadable = fmt.Sprintf("%.1f KB", float64(img.Size)/1024)
+		}
+		images = append(images, img)
+	}
+	return images, nil
+}
+
+// DeleteCachedImage deletes a single cached image by ID
+func DeleteCachedImage(id int) error {
+	_, err := DB.Exec("DELETE FROM image_cache WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete cached image: %w", err)
+	}
+	return nil
+}
+
 // GetDatabaseSize returns the size of the database file in bytes
 func GetDatabaseSize() (int64, error) {
 	dbPath := filepath.Join("tmp", "image_cache.db")

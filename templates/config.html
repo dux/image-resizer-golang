@@ -80,8 +80,8 @@
                 <span class="value">{{.Port}}</span>
             </div>
             <div class="config-item">
-                <span class="label">WebP Quality:</span>
-                <span class="value">{{.WebPQuality}}</span>
+                <span class="label">AVIF Quality:</span>
+                <span class="value">{{.AVIFQuality}}</span>
             </div>
             <div class="config-item">
                 <span class="label">Max Image Size:</span>
@@ -182,12 +182,22 @@
             {{end}}
         </div>
 
+        <div class="config-section">
+            <h2>Cache Management</h2>
+            <div style="display: flex; gap: 12px; align-items: center;">
+                <button onclick="clearCache()" style="background: #ff6b6b; color: white; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-size: 0.95em; font-weight: 500;">
+                    Clear All Cache
+                </button>
+                <a href="/cache" style="color: #4dabf7; text-decoration: none; font-size: 0.95em;">Browse cached images &rarr;</a>
+            </div>
+        </div>
+
         <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; color: #999; font-size: 0.9em;">
             <p>Environment Variables:</p>
             <ul style="font-family: 'Courier New', monospace; font-size: 0.9em;">
                 <li>PORT={{.Port}}</li>
                 <li>MAX_DB_SIZE={{.MaxDBSizeMB}}</li>
-                <li>QUALITY={{.WebPQuality}}</li>
+                <li>QUALITY={{.AVIFQuality}}</li>
                 <li>MAX_SIZE={{.MaxSize}}</li>
             </ul>
             <p style="margin-top: 15px;">
@@ -200,6 +210,22 @@
 
 {{define "scripts"}}
 <script>
+    function clearCache() {
+        if (confirm('Delete ALL cached images? This cannot be undone.')) {
+            fetch('/config/clear-cache', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Cache cleared: ' + data.deleted + ' images removed');
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(e => alert('Error: ' + e));
+        }
+    }
+
     function toggleDomain(domain) {
         if (confirm('Are you sure you want to toggle access for domain: ' + domain + '?')) {
             fetch('/config/toggle-domain', {

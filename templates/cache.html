@@ -1,0 +1,228 @@
+{{template "layout.html" .}}
+
+{{define "title"}}Cache Explorer{{end}}
+
+{{define "head"}}
+<style>
+    .container {
+        background: white;
+        border-radius: 8px;
+        padding: 30px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        max-width: 1100px;
+        margin: 0 auto;
+    }
+    .cache-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 24px;
+    }
+    .cache-header h1 {
+        font-size: 1.6em;
+        font-weight: bold;
+        color: #333;
+    }
+    .cache-count {
+        color: #888;
+        font-size: 0.95em;
+    }
+    .cache-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .cache-table th {
+        text-align: left;
+        padding: 10px 8px;
+        color: #666;
+        font-weight: 500;
+        font-size: 0.85em;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-bottom: 2px solid #eee;
+    }
+    .cache-table td {
+        padding: 8px;
+        border-bottom: 1px solid #f0f0f0;
+        font-size: 0.9em;
+        vertical-align: middle;
+    }
+    .cache-table tr:hover {
+        background: #fafafa;
+    }
+    .url-cell {
+        max-width: 400px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: 'Courier New', monospace;
+        font-size: 0.82em;
+        color: #555;
+    }
+    .url-cell a {
+        color: #555;
+        text-decoration: none;
+    }
+    .url-cell a:hover {
+        color: #4dabf7;
+    }
+    .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.8em;
+        font-weight: 500;
+    }
+    .badge-avif { background: #e3fafc; color: #0c8599; }
+    .badge-webp { background: #fff3bf; color: #e67700; }
+    .badge-jpeg { background: #fff0f6; color: #c2255c; }
+    .badge-png { background: #f3f0ff; color: #7048e8; }
+    .badge-gif { background: #f0fdf4; color: #2f9e44; }
+    .badge-svg { background: #f0f0f0; color: #666; }
+    .thumb {
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        border-radius: 4px;
+        background: #f5f5f5;
+        border: 1px solid #eee;
+    }
+    .btn-delete {
+        background: none;
+        border: 1px solid #fcc;
+        color: #e66;
+        padding: 3px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.85em;
+    }
+    .btn-delete:hover {
+        background: #fff0f0;
+        border-color: #e66;
+    }
+    .btn-clear-all {
+        background: #ff6b6b;
+        color: white;
+        border: none;
+        padding: 8px 20px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.9em;
+        font-weight: 500;
+    }
+    .btn-clear-all:hover {
+        background: #fa5252;
+    }
+    .empty-state {
+        text-align: center;
+        padding: 60px 0;
+        color: #999;
+    }
+    .size-cell {
+        font-family: 'Courier New', monospace;
+        font-size: 0.85em;
+        color: #666;
+        white-space: nowrap;
+    }
+    .date-cell {
+        font-size: 0.82em;
+        color: #999;
+        white-space: nowrap;
+    }
+</style>
+{{end}}
+
+{{define "content"}}
+<div class="py-8">
+    <div class="container">
+        <div class="cache-header">
+            <div>
+                <h1>Cache Explorer</h1>
+                <span class="cache-count">{{.Count}} cached images</span>
+            </div>
+            {{if .Images}}
+            <button class="btn-clear-all" onclick="clearAllCache()">Clear All Cache</button>
+            {{end}}
+        </div>
+
+        {{if .Images}}
+        <table class="cache-table">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th>Source URL</th>
+                    <th>Params</th>
+                    <th>Format</th>
+                    <th>Size</th>
+                    <th>Cached</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Images}}
+                <tr id="row-{{.ID}}">
+                    <td>
+                        <img class="thumb" src="/r/c40?{{.URL}}" alt="" loading="lazy">
+                    </td>
+                    <td class="url-cell" title="{{.URL}}">
+                        <a href="{{.URL}}" target="_blank">{{.URL}}</a>
+                    </td>
+                    <td><span class="badge" style="background:#f0f0f0;color:#555;">{{.CacheKey}}</span></td>
+                    <td>
+                        <span class="badge badge-{{.Format}}">{{.Format}}</span>
+                    </td>
+                    <td class="size-cell">{{.SizeReadable}}</td>
+                    <td class="date-cell">{{.CreatedAt}}</td>
+                    <td>
+                        <button class="btn-delete" onclick="deleteItem({{.ID}})">delete</button>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        {{else}}
+        <div class="empty-state">
+            <p style="font-size: 1.2em; margin-bottom: 8px;">Cache is empty</p>
+            <p>Images will appear here as they are resized and cached.</p>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+    function deleteItem(id) {
+        fetch('/config/delete-cache-item', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: id })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                var row = document.getElementById('row-' + id);
+                if (row) row.remove();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        })
+        .catch(e => alert('Error: ' + e));
+    }
+
+    function clearAllCache() {
+        if (confirm('Delete ALL cached images? This cannot be undone.')) {
+            fetch('/config/clear-cache', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(e => alert('Error: ' + e));
+        }
+    }
+</script>
+{{end}}

@@ -95,7 +95,7 @@ func init() {
 type ConfigInfo struct {
 	Port           string                `json:"port"`
 	MaxDBSizeMB    int                   `json:"max_db_size_mb"`
-	WebPQuality    int                   `json:"webp_quality"`
+	AVIFQuality    int                   `json:"avif_quality"`
 	MaxSize        int                   `json:"max_size"`
 	DBSizeMB       float64               `json:"db_size_mb"`
 	DBSizeBytes    int64                 `json:"db_size_bytes"`
@@ -156,7 +156,7 @@ func ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	config := ConfigInfo{
 		Port:             port,
 		MaxDBSizeMB:      database.MaxDatabaseSizeMB,
-		WebPQuality:      WebPQuality,
+		AVIFQuality:      AVIFQuality,
 		MaxSize:          MaxSize,
 		DBSizeMB:         dbSizeMB,
 		DBSizeBytes:      dbSize,
@@ -234,6 +234,108 @@ type ToggleRequest struct {
 type ToggleResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
+}
+
+// CacheExplorerHandler shows all cached images with metadata
+func CacheExplorerHandler(w http.ResponseWriter, r *http.Request) {
+	images, err := database.ListCachedImages()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to list cached images: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Check if client wants JSON
+	if r.Header.Get("Accept") == "application/json" || r.URL.Query().Get("format") == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(images)
+		return
+	}
+
+	if cacheTemplate == nil {
+		http.Error(w, "Template not available", http.StatusInternalServerError)
+		return
+	}
+
+	data := struct {
+		Images []database.CachedImageInfo
+		Count  int
+	}{
+		Images: images,
+		Count:  len(images),
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := cacheTemplate.Execute(w, data); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to render template: %v", err), http.StatusInternalServerError)
+	}
+}
+
+// DeleteCacheItemHandler deletes a single cached image by ID
+func DeleteCacheItemHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{Success: false, Error: "Failed to read body"})
+		return
+	}
+
+	var req struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.ID <= 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{Success: false, Error: "Invalid ID"})
+		return
+	}
+
+	if err := database.DeleteCachedImage(req.ID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{Success: false, Error: err.Error()})
+		return
+	}
+
+	log.Printf("Deleted cached image ID %d", req.ID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ToggleResponse{Success: true})
+}
+
+// ClearCacheHandler deletes all cached images from the database
+func ClearCacheHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	result, err := database.DB.Exec("DELETE FROM image_cache")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ToggleResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to clear cache: %v", err),
+		})
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	log.Printf("Cache cleared: %d images removed", rowsAffected)
+
+	// Vacuum to reclaim disk space
+	go func() {
+		if _, err := database.DB.Exec("VACUUM"); err != nil {
+			log.Printf("Failed to vacuum after cache clear: %v", err)
+		}
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"deleted": rowsAffected,
+	})
 }
 
 func ToggleDomainHandler(w http.ResponseWriter, r *http.Request) {

@@ -12,6 +12,7 @@ var (
 	demoTemplate   *template.Template
 	configTemplate *template.Template
 	logsTemplate   *template.Template
+	cacheTemplate  *template.Template
 )
 
 func init() {
@@ -35,6 +36,11 @@ func init() {
 	logsTemplate, err = template.ParseFiles("templates/layout.html", "templates/logs.html")
 	if err != nil {
 		log.Printf("Warning: failed to parse logs template: %v", err)
+	}
+
+	cacheTemplate, err = template.ParseFiles("templates/layout.html", "templates/cache.html")
+	if err != nil {
+		log.Printf("Warning: failed to parse cache template: %v", err)
 	}
 }
 

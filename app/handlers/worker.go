@@ -216,7 +216,7 @@ func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, us
 
 	if format != "gif" && useAVIF {
 		log.Printf("Attempting AVIF encoding for format: %s", format)
-		data, err := encodeAVIF(img, WebPQuality)
+		data, err := encodeAVIF(img, AVIFQuality)
 		if err == nil {
 			log.Printf("AVIF encoding successful, output size: %.1f KB", float64(len(data))/1024.0)
 			outputData = data
@@ -225,7 +225,7 @@ func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, us
 		} else {
 			log.Printf("AVIF encoding failed, trying WebP fallback: %v", err)
 			if useWebP {
-				data, err := encodeWebP(img, WebPQuality)
+				data, err := encodeWebP(img, AVIFQuality)
 				if err == nil {
 					outputData = data
 					mimeType = "image/webp"
@@ -242,7 +242,7 @@ func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, us
 		}
 	} else if format != "gif" && useWebP {
 		log.Printf("Attempting WebP encoding for format: %s", format)
-		data, err := encodeWebP(img, WebPQuality)
+		data, err := encodeWebP(img, AVIFQuality)
 		if err == nil {
 			log.Printf("WebP encoding successful with Google libwebp, output size: %.1f KB", float64(len(data))/1024.0)
 			outputData = data
@@ -328,6 +328,50 @@ func serveSpinnerSVG(w http.ResponseWriter, params *ResizeParams) {
 	w.Header().Set("X-Cache", "QUEUED")
 	w.Header().Set("X-Info", "processing; worker-timeout; retry-after-10s")
 	w.Write(svgData)
+}
+
+// generateErrorSVG creates a light red bordered placeholder SVG with error icon
+func generateErrorSVG(width, height int) []byte {
+	if width == 0 && height == 0 {
+		width = 400
+		height = 300
+	} else if width == 0 {
+		width = height
+	} else if height == 0 {
+		height = width
+	}
+
+	cx := width / 2
+	cy := height / 2
+
+	// Scale icon based on smallest dimension, clamped 8..24
+	r := minInt(width, height) / 5
+	if r < 8 {
+		r = 8
+	}
+	if r > 24 {
+		r = 24
+	}
+
+	// Error icon: circle with exclamation mark
+	svg := fmt.Sprintf(`<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0.5" y="0.5" width="%d" height="%d" fill="#fff8f8" stroke="#f0c0c0" stroke-width="1" rx="6" ry="6"/>
+  <circle cx="%d" cy="%d" r="%d" fill="none" stroke="#daa" stroke-width="1.5"/>
+  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="#daa" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="%d" cy="%d" r="1.5" fill="#daa"/>
+</svg>`,
+		width, height,
+		width-1, height-1,
+		cx, cy, r,
+		cx, cy-r*2/3, cx, cy+r/6,
+		cx, cy+r/3+2)
+
+	return []byte(svg)
+}
+
+// GenerateErrorSVGForTest exposes generateErrorSVG for tests
+func GenerateErrorSVGForTest(width, height int) []byte {
+	return generateErrorSVG(width, height)
 }
 
 // GenerateSpinnerSVGForTest exposes generateSpinnerSVG for tests
