@@ -424,6 +424,16 @@ func StartCleanupService() {
 		log.Println("Database cleanup service started (checking every minute)")
 
 		for range ticker.C {
+			// Clean up source cache entries older than 24h
+			// Sources are large (AVIF at max 1600px) and only needed to
+			// populate resize variants. Once variants are cached, source is dead weight.
+			result, err := DB.Exec("DELETE FROM image_cache WHERE cache_key = 'source' AND created_at < datetime('now', '-1 day')")
+			if err == nil {
+				if n, _ := result.RowsAffected(); n > 0 {
+					log.Printf("Source cache cleanup: removed %d entries older than 24h", n)
+				}
+			}
+
 			size, err := GetDatabaseSize()
 			if err != nil {
 				log.Printf("Error getting database size: %v", err)
