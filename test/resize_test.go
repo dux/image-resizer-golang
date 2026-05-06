@@ -22,10 +22,7 @@ import (
 	"image-resize/app/database"
 	"image-resize/app/handlers"
 
-	"github.com/gen2brain/avif"
-	"github.com/kolesa-team/go-webp/encoder"
-	"github.com/kolesa-team/go-webp/webp"
-	_ "golang.org/x/image/webp"
+	"github.com/davidbyttow/govips/v2/vips"
 )
 
 // imageServer creates a test HTTP server that serves generated images
@@ -76,6 +73,10 @@ func imageServer() *httptest.Server {
 }
 
 func TestMain(m *testing.M) {
+	// Initialize libvips (image work requires it)
+	vips.LoggingSettings(nil, vips.LogLevelError)
+	vips.Startup(nil)
+
 	// Initialize databases for tests
 	if err := database.InitDB(); err != nil {
 		panic(fmt.Sprintf("Failed to initialize test database: %v", err))
@@ -93,6 +94,7 @@ func TestMain(m *testing.M) {
 
 	// Clean up
 	os.RemoveAll("tmp")
+	vips.Shutdown()
 
 	os.Exit(code)
 }
@@ -1113,18 +1115,36 @@ func createTestGIF(width, height int) []byte {
 }
 
 func createTestWebP(width, height int) []byte {
-	img := createColoredImage(width, height)
-	var buf bytes.Buffer
-	options, _ := encoder.NewLossyEncoderOptions(encoder.PresetDefault, 90)
-	webp.Encode(&buf, img, options)
-	return buf.Bytes()
+	jpegBytes := createTestJPEG(width, height)
+	img, err := vips.NewImageFromBuffer(jpegBytes)
+	if err != nil {
+		panic(fmt.Sprintf("createTestWebP: load failed: %v", err))
+	}
+	defer img.Close()
+	params := vips.NewWebpExportParams()
+	params.Quality = 90
+	data, _, err := img.ExportWebp(params)
+	if err != nil {
+		panic(fmt.Sprintf("createTestWebP: encode failed: %v", err))
+	}
+	return data
 }
 
 func createTestAVIF(width, height int) []byte {
-	img := createColoredImage(width, height)
-	var buf bytes.Buffer
-	avif.Encode(&buf, img, avif.Options{Quality: 60, QualityAlpha: 60, Speed: 10})
-	return buf.Bytes()
+	jpegBytes := createTestJPEG(width, height)
+	img, err := vips.NewImageFromBuffer(jpegBytes)
+	if err != nil {
+		panic(fmt.Sprintf("createTestAVIF: load failed: %v", err))
+	}
+	defer img.Close()
+	params := vips.NewAvifExportParams()
+	params.Quality = 60
+	params.Effort = 1
+	data, _, err := img.ExportAvif(params)
+	if err != nil {
+		panic(fmt.Sprintf("createTestAVIF: encode failed: %v", err))
+	}
+	return data
 }
 
 func createColoredImage(width, height int) image.Image {

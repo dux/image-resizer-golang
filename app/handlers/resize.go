@@ -1,11 +1,7 @@
 package handlers
 
 import (
-	"bytes"
 	"fmt"
-	"image"
-	"image/jpeg"
-	"image/png"
 	"log"
 	"net/http"
 	"net/url"
@@ -16,11 +12,7 @@ import (
 
 	"image-resize/app/database"
 
-	"github.com/disintegration/imaging"
-	"github.com/gen2brain/avif"
-	"github.com/kolesa-team/go-webp/encoder"
-	"github.com/kolesa-team/go-webp/webp"
-	_ "golang.org/x/image/webp" // Register WebP decoder
+	"github.com/davidbyttow/govips/v2/vips"
 )
 
 // AVIFQuality is the quality setting for image encoding (AVIF, WebP, JPEG fallback)
@@ -36,7 +28,6 @@ var AllowedDomains []string
 var httpClient *http.Client
 
 func init() {
-	// Initialize shared HTTP client with connection pooling
 	httpClient = &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -46,7 +37,6 @@ func init() {
 		},
 	}
 
-	// Read QUALITY from environment or use default
 	qualityStr := os.Getenv("QUALITY")
 	if qualityStr != "" {
 		quality, err := strconv.Atoi(qualityStr)
@@ -61,7 +51,6 @@ func init() {
 		AVIFQuality = 90
 	}
 
-	// Read MAX_SIZE from environment or use default
 	maxSizeStr := os.Getenv("MAX_SIZE")
 	if maxSizeStr != "" {
 		maxSize, err := strconv.Atoi(maxSizeStr)
@@ -82,7 +71,6 @@ func init() {
 func InitAllowedDomains() {
 	allowedStr := os.Getenv("ALLOWED_DOMAINS")
 	if allowedStr != "" {
-		// Split on comma or semicolon
 		parts := strings.FieldsFunc(allowedStr, func(r rune) bool {
 			return r == ',' || r == ';'
 		})
@@ -98,36 +86,89 @@ func InitAllowedDomains() {
 	}
 }
 
-// Helper function to encode image as WebP using Google's libwebp
-func encodeWebP(img image.Image, quality int) ([]byte, error) {
-	options, err := encoder.NewLossyEncoderOptions(encoder.PresetDefault, float32(quality))
-	if err != nil {
-		return nil, err
+// formatName normalizes a vips ImageType to a friendly format string.
+// vips maps AVIF to "heif" internally, but we surface "avif" for clarity
+// and existing cache-format compatibility.
+func formatName(t vips.ImageType) string {
+	switch t {
+	case vips.ImageTypeJPEG:
+		return "jpeg"
+	case vips.ImageTypePNG:
+		return "png"
+	case vips.ImageTypeGIF:
+		return "gif"
+	case vips.ImageTypeWEBP:
+		return "webp"
+	case vips.ImageTypeAVIF, vips.ImageTypeHEIF:
+		return "avif"
+	case vips.ImageTypeSVG:
+		return "svg"
+	case vips.ImageTypeTIFF:
+		return "tiff"
+	case vips.ImageTypeBMP:
+		return "bmp"
 	}
-
-	var buf bytes.Buffer
-	err = webp.Encode(&buf, img, options)
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return "jpeg"
 }
 
-// encodeFallback encodes image in its original format (non-WebP fallback)
-func encodeFallback(format string, img image.Image, buf *bytes.Buffer, mimeType *string, outputFormat *string) {
+// encodeAVIF exports the image as AVIF.
+func encodeAVIF(img *vips.ImageRef, quality int) ([]byte, error) {
+	params := vips.NewAvifExportParams()
+	params.Quality = quality
+	// Effort 0..9: lower is faster, higher is smaller. Match prior "speed=9" intent (fast).
+	params.Effort = 1
+	params.StripMetadata = true
+	data, _, err := img.ExportAvif(params)
+	return data, err
+}
+
+// encodeWebP exports the image as WebP.
+func encodeWebP(img *vips.ImageRef, quality int) ([]byte, error) {
+	params := vips.NewWebpExportParams()
+	params.Quality = quality
+	params.StripMetadata = true
+	data, _, err := img.ExportWebp(params)
+	return data, err
+}
+
+// encodeJPEG exports the image as JPEG.
+func encodeJPEG(img *vips.ImageRef, quality int) ([]byte, error) {
+	params := vips.NewJpegExportParams()
+	params.Quality = quality
+	params.StripMetadata = true
+	data, _, err := img.ExportJpeg(params)
+	return data, err
+}
+
+// encodePNG exports the image as PNG.
+func encodePNG(img *vips.ImageRef) ([]byte, error) {
+	params := vips.NewPngExportParams()
+	params.StripMetadata = true
+	data, _, err := img.ExportPng(params)
+	return data, err
+}
+
+// encodeGIF exports the image as GIF.
+func encodeGIF(img *vips.ImageRef) ([]byte, error) {
+	params := vips.NewGifExportParams()
+	data, _, err := img.ExportGIF(params)
+	return data, err
+}
+
+// encodeFallback encodes image in its original (non-WebP/AVIF) format,
+// matching the prior behavior: JPEG/PNG natively, everything else as JPEG.
+// Returns (data, mimeType, formatName, error).
+func encodeFallback(format string, img *vips.ImageRef) ([]byte, string, string, error) {
 	switch format {
-	case "jpeg", "jpg":
-		*mimeType = "image/jpeg"
-		*outputFormat = "jpeg"
-		jpeg.Encode(buf, img, &jpeg.Options{Quality: AVIFQuality})
 	case "png":
-		*mimeType = "image/png"
-		*outputFormat = "png"
-		png.Encode(buf, img)
+		data, err := encodePNG(img)
+		return data, "image/png", "png", err
+	case "jpeg", "jpg":
+		data, err := encodeJPEG(img, AVIFQuality)
+		return data, "image/jpeg", "jpeg", err
 	default:
-		*mimeType = "image/jpeg"
-		*outputFormat = "jpeg"
-		jpeg.Encode(buf, img, &jpeg.Options{Quality: AVIFQuality})
+		data, err := encodeJPEG(img, AVIFQuality)
+		return data, "image/jpeg", "jpeg", err
 	}
 }
 
@@ -148,16 +189,13 @@ func isAllowedSource(srcURL string, r *http.Request) bool {
 
 	host := strings.ToLower(parsed.Hostname())
 
-	// Auto-allow sibling domains: if service is on img.foo.bar, allow *.foo.bar
 	if r != nil {
 		serviceHost := strings.ToLower(r.Host)
-		// Strip port
 		if idx := strings.LastIndex(serviceHost, ":"); idx != -1 {
 			serviceHost = serviceHost[:idx]
 		}
-		// Extract base domain (strip first subdomain)
 		if parts := strings.SplitN(serviceHost, ".", 2); len(parts) == 2 {
-			baseDomain := parts[1] // e.g. "sohospot.com" from "img.sohospot.com"
+			baseDomain := parts[1]
 			if host == baseDomain || strings.HasSuffix(host, "."+baseDomain) {
 				return true
 			}
@@ -166,8 +204,7 @@ func isAllowedSource(srcURL string, r *http.Request) bool {
 
 	for _, allowed := range AllowedDomains {
 		if strings.HasPrefix(allowed, "*.") {
-			// Wildcard: *.example.com matches sub.example.com and example.com
-			suffix := allowed[1:] // ".example.com"
+			suffix := allowed[1:]
 			if host == allowed[2:] || strings.HasSuffix(host, suffix) {
 				return true
 			}
@@ -178,19 +215,17 @@ func isAllowedSource(srcURL string, r *http.Request) bool {
 	return false
 }
 
-// isPrivateIP checks if a hostname looks like a private/internal address (SSRF protection)
+// isPrivateHost checks if a hostname looks like a private/internal address (SSRF protection)
 func isPrivateHost(srcURL string) bool {
 	parsed, err := url.Parse(srcURL)
 	if err != nil {
-		return true // block on parse error
+		return true
 	}
 	host := strings.ToLower(parsed.Hostname())
 
-	// Block obvious private/internal hosts
 	if host == "localhost" || host == "" {
 		return true
 	}
-	// Block private IPv4 ranges and loopback
 	privatePrefixes := []string{
 		"10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
 		"172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
@@ -202,68 +237,43 @@ func isPrivateHost(srcURL string) bool {
 			return true
 		}
 	}
-	// Block [::1] and similar IPv6 loopback
 	if host == "::1" || host == "[::1]" {
 		return true
 	}
 	return false
 }
 
-// enforceMaxSize ensures image dimensions don't exceed MaxSize while preserving aspect ratio
-func enforceMaxSize(img image.Image) image.Image {
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
+// enforceMaxSize ensures the image dimensions don't exceed MaxSize while
+// preserving aspect ratio. Modifies img in place.
+func enforceMaxSize(img *vips.ImageRef) error {
+	width := img.Width()
+	height := img.Height()
 
-	// If both dimensions are within limits, return original
 	if width <= MaxSize && height <= MaxSize {
-		return img
+		return nil
 	}
 
-	// Calculate scale factor to fit within MaxSize while preserving aspect ratio
 	scaleX := float64(MaxSize) / float64(width)
 	scaleY := float64(MaxSize) / float64(height)
-
-	// Use the smaller scale to ensure both dimensions fit
 	scale := scaleX
 	if scaleY < scaleX {
 		scale = scaleY
 	}
 
-	newWidth := int(float64(width) * scale)
-	newHeight := int(float64(height) * scale)
+	log.Printf("Enforcing max size: original=%dx%d, max=%d, scale=%.3f",
+		width, height, MaxSize, scale)
 
-	log.Printf("Enforcing max size: original=%dx%d, max=%d, scale=%.3f, new=%dx%d",
-		width, height, MaxSize, scale, newWidth, newHeight)
-
-	return imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
+	return img.Resize(scale, vips.KernelLanczos3)
 }
 
 // Check if client accepts WebP
 func acceptsWebP(r *http.Request) bool {
-	accept := r.Header.Get("Accept")
-	return strings.Contains(accept, "image/webp")
+	return strings.Contains(r.Header.Get("Accept"), "image/webp")
 }
 
 // Check if client accepts AVIF
 func acceptsAVIF(r *http.Request) bool {
-	accept := r.Header.Get("Accept")
-	return strings.Contains(accept, "image/avif")
-}
-
-// Helper function to encode image as AVIF
-func encodeAVIF(img image.Image, quality int) ([]byte, error) {
-	var buf bytes.Buffer
-	opts := avif.Options{
-		Quality:      quality,
-		QualityAlpha: quality,
-		Speed:        9, // prioritize speed on small VPS (0=slowest/best, 10=fastest/worst)
-	}
-	err := avif.Encode(&buf, img, opts)
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return strings.Contains(r.Header.Get("Accept"), "image/avif")
 }
 
 // ResizeParams holds the resize parameters
@@ -271,14 +281,13 @@ type ResizeParams struct {
 	Width    int
 	Height   int
 	CropMode bool
-	CacheKey string // For caching with new parameter format
+	CacheKey string
 }
 
 // parseResizeParams parses w=100x100 or c=100x100 parameters (also accepts width/height/crop)
 func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 	params := &ResizeParams{}
 
-	// Check for crop parameter first (both short and long forms)
 	cropStr := r.URL.Query().Get("c")
 	if cropStr == "" {
 		cropStr = r.URL.Query().Get("crop")
@@ -286,7 +295,6 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 	if cropStr != "" {
 		params.CropMode = true
 
-		// Handle both c=100 and c=100x100 formats
 		if strings.Contains(cropStr, "x") {
 			parts := strings.Split(cropStr, "x")
 			if len(parts) != 2 {
@@ -306,7 +314,6 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 			params.Width = width
 			params.Height = height
 		} else {
-			// Single value means square crop (c=100 -> c=100x100)
 			size, err := strconv.Atoi(cropStr)
 			if err != nil || size <= 0 {
 				return nil, fmt.Errorf("invalid crop size")
@@ -319,7 +326,6 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 		return params, nil
 	}
 
-	// Check for width parameter (both short and long forms)
 	widthStr := r.URL.Query().Get("w")
 	if widthStr == "" {
 		widthStr = r.URL.Query().Get("width")
@@ -330,7 +336,6 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 	}
 
 	if widthStr != "" {
-		// Check if it's in format 100x100
 		if strings.Contains(widthStr, "x") {
 			parts := strings.Split(widthStr, "x")
 			if len(parts) != 2 {
@@ -351,7 +356,6 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 			params.Height = height
 			params.CacheKey = fmt.Sprintf("w_%dx%d", width, height)
 		} else {
-			// Just width
 			width, err := strconv.Atoi(widthStr)
 			if err != nil || width <= 0 {
 				return nil, fmt.Errorf("invalid width parameter")
@@ -362,19 +366,16 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 		}
 	}
 
-	// Check for height parameter
 	if heightStr != "" {
 		height, err := strconv.Atoi(heightStr)
 		if err != nil || height <= 0 {
 			return nil, fmt.Errorf("invalid height parameter")
 		}
 
-		// If width was already set, combine them
 		if params.Width > 0 {
 			params.Height = height
 			params.CacheKey = fmt.Sprintf("w_%dx%d", params.Width, height)
 		} else {
-			// Height only
 			params.Width = 0
 			params.Height = height
 			params.CacheKey = fmt.Sprintf("h_%d", height)
@@ -384,9 +385,8 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 	return params, nil
 }
 
-// resizeImage applies the resize parameters to the image
-func resizeImage(img image.Image, params *ResizeParams) image.Image {
-	// Enforce max size limits on requested dimensions
+// resizeImage applies the resize parameters to the image. Modifies in place.
+func resizeImage(img *vips.ImageRef, params *ResizeParams) error {
 	targetWidth := params.Width
 	targetHeight := params.Height
 
@@ -400,102 +400,105 @@ func resizeImage(img image.Image, params *ResizeParams) image.Image {
 	}
 
 	if targetWidth == 0 && targetHeight == 0 {
-		return img // No resizing needed
+		return nil
 	}
 
-	// Skip upscaling - don't enlarge images beyond their original size
-	origBounds := img.Bounds()
-	origW := origBounds.Dx()
-	origH := origBounds.Dy()
+	origW := img.Width()
+	origH := img.Height()
 
+	// Skip upscaling - don't enlarge images beyond their original size
 	if !params.CropMode {
 		if targetWidth > 0 && targetHeight > 0 {
 			if targetWidth >= origW && targetHeight >= origH {
-				return img
+				return nil
 			}
 		} else if targetWidth > 0 && targetWidth >= origW {
-			return img
+			return nil
 		} else if targetHeight > 0 && targetHeight >= origH {
-			return img
+			return nil
 		}
 	} else {
-		// For crop: skip if both target dimensions are larger than original
 		if targetWidth >= origW && targetHeight >= origH {
-			return img
+			return nil
 		}
 	}
 
 	if params.CropMode {
-		// Resize and crop with custom anchor point
-		// We'll create a custom anchor that's 70% from top (0.3 position vertically)
-		// First resize to fill, then manually crop with our desired focus
-
-		// Get original dimensions
-		origBounds := img.Bounds()
-		origWidth := float64(origBounds.Dx())
-		origHeight := float64(origBounds.Dy())
-
-		// Calculate scale factor - we need to fill the target dimensions
+		origWidth := float64(origW)
+		origHeight := float64(origH)
 		cropTargetWidth := float64(targetWidth)
 		cropTargetHeight := float64(targetHeight)
 
+		// Cover scale: pick the larger so we fill both target dimensions
 		scaleX := cropTargetWidth / origWidth
 		scaleY := cropTargetHeight / origHeight
-
-		// Use the larger scale to ensure we cover the target area
 		scale := scaleX
 		if scaleY > scaleX {
 			scale = scaleY
 		}
 
-		// Resize the image
 		newWidth := int(origWidth * scale)
 		newHeight := int(origHeight * scale)
 		log.Printf("Crop debug: original=%dx%d, target=%dx%d, scale=%.2f, resized=%dx%d",
-			int(origWidth), int(origHeight), targetWidth, targetHeight, scale, newWidth, newHeight)
-		resized := imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
+			origW, origH, targetWidth, targetHeight, scale, newWidth, newHeight)
 
-		// Now crop with 70% top focus
-		cropX := (newWidth - targetWidth) / 2               // Center horizontally
-		cropY := int(float64(newHeight-targetHeight) * 0.3) // 30% from top, 70% from bottom
-		log.Printf("Crop position: x=%d, y=%d, crop to %dx%d", cropX, cropY, targetWidth, targetHeight)
+		if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
+			return err
+		}
 
-		// Ensure crop coordinates are valid
+		// Re-read in case rounding shifted dimensions
+		curW := img.Width()
+		curH := img.Height()
+
+		// 70% top focus: 30% from top, 70% from bottom
+		cropX := (curW - targetWidth) / 2
+		cropY := int(float64(curH-targetHeight) * 0.3)
 		if cropX < 0 {
 			cropX = 0
 		}
 		if cropY < 0 {
 			cropY = 0
 		}
-
-		return imaging.Crop(resized, image.Rect(cropX, cropY, cropX+targetWidth, cropY+targetHeight))
+		// Clamp width/height so ExtractArea never escapes the bounds
+		w := targetWidth
+		h := targetHeight
+		if cropX+w > curW {
+			w = curW - cropX
+		}
+		if cropY+h > curH {
+			h = curH - cropY
+		}
+		log.Printf("Crop position: x=%d, y=%d, crop to %dx%d", cropX, cropY, w, h)
+		return img.ExtractArea(cropX, cropY, w, h)
 	}
 
-	// Resize with max width/height constraint
+	// Both dimensions: fit within constraints (preserve aspect ratio)
 	if targetWidth > 0 && targetHeight > 0 {
-		// Both width and height specified - fit within constraints
-		return imaging.Fit(img, targetWidth, targetHeight, imaging.Lanczos)
+		scaleX := float64(targetWidth) / float64(origW)
+		scaleY := float64(targetHeight) / float64(origH)
+		scale := scaleX
+		if scaleY < scaleX {
+			scale = scaleY
+		}
+		return img.Resize(scale, vips.KernelLanczos3)
 	}
 
 	if targetWidth > 0 {
-		// Just width specified (old behavior)
-		return imaging.Resize(img, targetWidth, 0, imaging.Lanczos)
+		scale := float64(targetWidth) / float64(origW)
+		return img.Resize(scale, vips.KernelLanczos3)
 	}
 
 	if targetHeight > 0 {
-		// Just height specified - resize to fixed height
-		return imaging.Resize(img, 0, targetHeight, imaging.Lanczos)
+		scale := float64(targetHeight) / float64(origH)
+		return img.Resize(scale, vips.KernelLanczos3)
 	}
 
-	// No resize parameters - return original image
-	return img
+	return nil
 }
 
 func ResizeHandler(w http.ResponseWriter, r *http.Request) {
-	// Handle cases where &amp; might be used instead of &
 	rawQuery := r.URL.RawQuery
 	if strings.Contains(rawQuery, "&amp;") {
-		// Replace &amp; with & and reparse
 		fixedQuery := strings.ReplaceAll(rawQuery, "&amp;", "&")
 		values, _ := url.ParseQuery(fixedQuery)
 		r.URL.RawQuery = fixedQuery
@@ -503,42 +506,33 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse the new URL format: /r/w=200?https://...
-	// Extract parameters from path
 	path := strings.TrimPrefix(r.URL.Path, "/r/")
 	var params *ResizeParams
 	if path != "" && path != "r" {
-		// Parse parameters from path like "w=200" or "c=100x100"
 		paramParts := strings.Split(path, "?")
 		if len(paramParts) > 0 {
-			// Create a fake request to reuse parseResizeParams
 			fakeReq := &http.Request{URL: &url.URL{}}
 			fakeQuery := url.Values{}
 
-			// Parse each parameter
 			for _, param := range strings.Split(paramParts[0], "&") {
 				if param == "" {
 					continue
 				}
 
-				// Check if parameter has = sign
 				if strings.Contains(param, "=") {
 					parts := strings.SplitN(param, "=", 2)
 					if len(parts) == 2 {
 						fakeQuery.Set(parts[0], parts[1])
 					}
 				} else {
-					// Handle format without = sign (e.g., "w200", "w_200", "c300x200", "h150")
 					if len(param) > 1 {
-						// Extract the parameter type (first character) and value
 						paramType := param[0:1]
 						paramValue := param[1:]
 
-						// Strip leading underscore (supports w_200 format)
 						if strings.HasPrefix(paramValue, "_") {
 							paramValue = paramValue[1:]
 						}
 
-						// Validate that the value is numeric (with optional 'x' for crop)
 						if paramType == "w" || paramType == "h" || paramType == "c" {
 							fakeQuery.Set(paramType, paramValue)
 						}
@@ -555,7 +549,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		// Fall back to old format - parse from query parameters
 		var err error
 		params, err = parseResizeParams(r)
 		if err != nil {
@@ -567,10 +560,8 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	// The source URL is now the entire query string for new format
 	var srcURL string
 	if path != "" && path != "r" && r.URL.RawQuery != "" {
-		// New format: the entire query string is the URL
 		srcURL = r.URL.RawQuery
 	} else {
-		// Old format: get from src parameter
 		srcURL = r.URL.Query().Get("src")
 	}
 
@@ -579,7 +570,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// URL decode the src parameter (handles double-encoding)
 	decodedURL, err := url.QueryUnescape(srcURL)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Invalid src URL: %v", err), http.StatusBadRequest)
@@ -587,15 +577,12 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	srcURL = decodedURL
 
-	// If URL doesn't have a protocol, assume https://
 	if !strings.HasPrefix(srcURL, "http://") && !strings.HasPrefix(srcURL, "https://") && !strings.HasPrefix(srcURL, "//") {
-		// Check if it looks like a domain (contains a dot)
 		if strings.Contains(srcURL, ".") {
 			srcURL = "https://" + srcURL
 		}
 	}
 
-	// Fix common URL malformations (missing slash after protocol)
 	if strings.HasPrefix(srcURL, "https:/") && !strings.HasPrefix(srcURL, "https://") {
 		srcURL = strings.Replace(srcURL, "https:/", "https://", 1)
 	}
@@ -603,13 +590,11 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		srcURL = strings.Replace(srcURL, "http:/", "http://", 1)
 	}
 
-	// SSRF protection: block private/internal addresses (only when whitelist is configured)
 	if len(AllowedDomains) > 0 && isPrivateHost(srcURL) {
 		http.Error(w, "Source URL not allowed", http.StatusForbidden)
 		return
 	}
 
-	// Domain whitelist check
 	if !isAllowedSource(srcURL, r) {
 		parsed, _ := url.Parse(srcURL)
 		host := ""
@@ -620,7 +605,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track referer
 	referer := r.Header.Get("Referer")
 	go func() {
 		if err := database.TrackReferer(referer); err != nil {
@@ -628,7 +612,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Check if referer domain is disabled
 	domain := database.ExtractBaseDomain(referer)
 	isDisabled, err := database.IsDomainDisabled(domain)
 	if err != nil {
@@ -638,9 +621,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// params already parsed above
-	// Determine preferred output format based on client Accept header
-	// Priority: AVIF > WebP > original format
 	useAVIF := acceptsAVIF(r)
 	useWebP := acceptsWebP(r)
 	formatSuffix := "jpg"
@@ -651,7 +631,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheKey := params.CacheKey + "_" + formatSuffix
 
-	// Always check cache first - client headers do not bypass server cache
 	cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheKey)
 	if err != nil {
 		log.Printf("Error checking cache: %v", err)
@@ -667,7 +646,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Submit to worker pool for async fetch + resize
 	job := &ResizeJob{
 		SrcURL:   srcURL,
 		Params:   params,
@@ -678,12 +656,10 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 
 	entry := pool.Submit(job)
 
-	// Wait for worker result or timeout
 	select {
 	case <-entry.done:
 		result := entry.result
 		if result.Err != nil {
-			// Worker completed with error - return error SVG
 			svgData := generateErrorSVG(params.Width, params.Height)
 			w.Header().Set("Content-Type", "image/svg+xml")
 			w.Header().Set("Cache-Control", "no-cache, max-age=60")
@@ -694,7 +670,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Serve the resized image
 		w.Header().Set("Content-Type", result.ContentType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(result.Data)))
 		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
@@ -703,7 +678,6 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write(result.Data)
 
 	case <-time.After(WorkerWaitTimeout):
-		// Worker still processing - return spinner placeholder
 		log.Printf("Worker timeout for %s (key: %s), returning spinner", srcURL, cacheKey)
 		serveSpinnerSVG(w, params)
 	}

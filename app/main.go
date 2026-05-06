@@ -13,6 +13,7 @@ import (
 	"image-resize/app/database"
 	"image-resize/app/handlers"
 
+	"github.com/davidbyttow/govips/v2/vips"
 	"github.com/joho/godotenv"
 )
 
@@ -40,6 +41,11 @@ func main() {
 
 	// Start database cleanup service
 	database.StartCleanupService()
+
+	// Initialize libvips (must be before any image work)
+	vips.LoggingSettings(nil, vips.LogLevelError)
+	vips.Startup(nil)
+	defer vips.Shutdown()
 
 	// Start resize worker pool (reads WORKERS env, default 5)
 	handlers.StartWorkerPool(0)

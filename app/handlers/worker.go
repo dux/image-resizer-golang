@@ -1,11 +1,8 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"image"
-	"image/gif"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +13,8 @@ import (
 	"time"
 
 	"image-resize/app/database"
+
+	"github.com/davidbyttow/govips/v2/vips"
 )
 
 // ResizeResult holds the output of a fetch-and-resize operation
@@ -39,8 +38,8 @@ type ResizeJob struct {
 // inflightEntry tracks an in-progress resize operation.
 // Multiple requests for the same URL+cacheKey share the same entry (coalescing).
 type inflightEntry struct {
-	done   chan struct{} // closed when result is ready
-	result *ResizeResult // set before done is closed
+	done   chan struct{}
+	result *ResizeResult
 }
 
 type workerTask struct {
@@ -51,25 +50,27 @@ type workerTask struct {
 
 // sourceResult tracks an in-progress source fetch.
 // Multiple workers needing the same source URL share the same entry.
+// data holds the source bytes (already size-clamped, possibly re-encoded as AVIF
+// for compactness when stored in the DB cache). For SVG passthrough, isSVG is
+// true and data is the raw SVG bytes.
 type sourceResult struct {
-	done    chan struct{} // closed when source is ready
-	img     image.Image   // decoded source at max size (nil for SVG)
-	format  string        // original format: "jpeg", "png", "gif", etc.
-	isSVG   bool
-	svgData []byte // raw SVG bytes (only if isSVG)
-	err     error
+	done   chan struct{}
+	data   []byte
+	format string // original format: "jpeg", "png", "webp", "avif", "gif", "svg"
+	isSVG  bool
+	err    error
 }
 
 // WorkerPool manages a fixed number of resize worker goroutines
 type WorkerPool struct {
 	jobs           chan *workerTask
-	inflight       sync.Map // string -> *inflightEntry (resize job coalescing)
-	sourceInflight sync.Map // string -> *sourceResult (source fetch coalescing)
+	inflight       sync.Map
+	sourceInflight sync.Map
 }
 
 // WorkerWaitTimeout is how long the HTTP handler waits for a worker result
-// before returning a spinner SVG placeholder. Default 10 seconds.
-var WorkerWaitTimeout = 10 * time.Second
+// before returning a spinner SVG placeholder. Default 60 seconds.
+var WorkerWaitTimeout = 60 * time.Second
 
 // pool is the package-level worker pool instance
 var pool *WorkerPool
@@ -117,13 +118,10 @@ func (p *WorkerPool) Submit(job *ResizeJob) *inflightEntry {
 		return entry
 	}
 
-	// New job - send to workers
 	task := &workerTask{job: job, entry: entry, key: key}
 	select {
 	case p.jobs <- task:
-		// queued to worker
 	default:
-		// Channel full - overflow to a goroutine
 		log.Printf("Worker queue full, processing in overflow goroutine")
 		go p.processTask(task)
 	}
@@ -131,7 +129,6 @@ func (p *WorkerPool) Submit(job *ResizeJob) *inflightEntry {
 	return entry
 }
 
-// worker is the main loop for a resize worker goroutine
 func (p *WorkerPool) worker(id int) {
 	for task := range p.jobs {
 		p.processTask(task)
@@ -144,11 +141,9 @@ func (p *WorkerPool) processTask(task *workerTask) {
 	result := fetchAndResize(ctx, task.job.SrcURL, task.job.Params, task.job.UseAVIF, task.job.UseWebP)
 	cancel()
 
-	// Store result and notify all waiters (closing done unblocks all receivers)
 	task.entry.result = result
 	close(task.entry.done)
 
-	// Cache successful non-SVG results
 	if result.Err == nil && result.Format != "svg" {
 		if task.job.Params.Width > 0 || task.job.Params.Height > 0 {
 			go func() {
@@ -159,7 +154,6 @@ func (p *WorkerPool) processTask(task *workerTask) {
 		}
 	}
 
-	// Remove from inflight map so future requests create new work
 	p.inflight.Delete(task.key)
 }
 
@@ -167,22 +161,19 @@ func (p *WorkerPool) processTask(task *workerTask) {
 // Source caching: download once, resize many
 // ---------------------------------------------------------------------------
 
-// ensureSource returns the decoded source image for a URL, either from
-// DB cache or by fetching from remote. Concurrent requests for the same
-// source URL are coalesced - only one goroutine fetches.
+// ensureSource returns the source bytes for a URL (decoded-ready, max-size
+// enforced, re-encoded as AVIF for compact caching), either from DB cache or
+// by fetching from remote. Concurrent requests for the same source URL are
+// coalesced - only one goroutine fetches.
 func (p *WorkerPool) ensureSource(ctx context.Context, srcURL string) *sourceResult {
 	// 1. Check DB cache for source
 	cachedData, _, cachedFormat, err := database.GetCachedImage(srcURL, "source")
 	if err == nil && cachedData != nil {
+		log.Printf("Source cache HIT for %s (format: %s)", srcURL, cachedFormat)
 		if cachedFormat == "svg" {
-			return &sourceResult{isSVG: true, svgData: cachedData, format: "svg"}
+			return &sourceResult{isSVG: true, data: cachedData, format: "svg"}
 		}
-		img, _, err := image.Decode(bytes.NewReader(cachedData))
-		if err == nil {
-			log.Printf("Source cache HIT for %s (format: %s)", srcURL, cachedFormat)
-			return &sourceResult{img: img, format: cachedFormat}
-		}
-		log.Printf("Source cache decode failed for %s, re-fetching: %v", srcURL, err)
+		return &sourceResult{data: cachedData, format: cachedFormat}
 	}
 
 	// 2. Coalesce concurrent source fetches for the same URL
@@ -191,7 +182,6 @@ func (p *WorkerPool) ensureSource(ctx context.Context, srcURL string) *sourceRes
 	entry := actual.(*sourceResult)
 
 	if loaded {
-		// Another worker is already fetching this source - wait
 		log.Printf("Source fetch coalescing for %s", srcURL)
 		select {
 		case <-entry.done:
@@ -207,35 +197,28 @@ func (p *WorkerPool) ensureSource(ctx context.Context, srcURL string) *sourceRes
 	// 4. Notify all waiting workers (they can start resizing immediately)
 	close(entry.done)
 
-	// 5. Cache source to DB synchronously (before cleanup, so next request sees it)
+	// 5. Cache to DB synchronously (so next request sees it)
 	if entry.err == nil {
+		mime := "image/avif"
 		if entry.isSVG {
-			if err := database.CacheImage(srcURL, "source", entry.svgData, "image/svg+xml", "svg"); err != nil {
-				log.Printf("Failed to cache source SVG: %v", err)
-			}
-		} else {
-			data, err := encodeAVIF(entry.img, AVIFQuality)
-			if err == nil {
-				// Store with original format (e.g. "jpeg") so resize decisions work correctly
-				if err := database.CacheImage(srcURL, "source", data, "image/avif", entry.format); err != nil {
-					log.Printf("Failed to cache source image: %v", err)
-				} else {
-					log.Printf("Source cached for %s (original: %s, stored as AVIF, %.1f KB)", srcURL, entry.format, float64(len(data))/1024.0)
-				}
-			} else {
-				log.Printf("Failed to encode source as AVIF for caching: %v", err)
-			}
+			mime = "image/svg+xml"
+		}
+		if err := database.CacheImage(srcURL, "source", entry.data, mime, entry.format); err != nil {
+			log.Printf("Failed to cache source: %v", err)
+		} else if !entry.isSVG {
+			log.Printf("Source cached for %s (original: %s, stored as AVIF, %.1f KB)",
+				srcURL, entry.format, float64(len(entry.data))/1024.0)
 		}
 	}
 
-	// 6. Remove from inflight so future requests check DB cache first
 	p.sourceInflight.Delete(srcURL)
 
 	return entry
 }
 
-// fetchSourceRemote downloads an image from a remote URL, decodes it,
-// enforces max size, and populates the sourceResult entry.
+// fetchSourceRemote downloads an image from a remote URL, decodes it via vips,
+// enforces max size, re-encodes as AVIF for compact caching, and populates
+// the sourceResult entry. SVG bypasses decode and is stored verbatim.
 func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) {
 	req, err := http.NewRequestWithContext(ctx, "GET", srcURL, nil)
 	if err != nil {
@@ -243,11 +226,9 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 		return
 	}
 
-	// Browser-like headers to avoid rate limiting
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0")
 	req.Header.Set("Accept", "image/avif,image/webp,image/png,image/jpeg,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	// NOTE: Do NOT set Accept-Encoding manually. Go auto-handles gzip decompression.
 	req.Header.Set("DNT", "1")
 	req.Header.Set("Connection", "keep-alive")
 	req.Header.Set("Upgrade-Insecure-Requests", "1")
@@ -277,26 +258,45 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 
 	contentType := resp.Header.Get("Content-Type")
 
-	// SVG passthrough
+	// SVG passthrough (no decode)
 	if strings.Contains(contentType, "svg") || strings.HasSuffix(strings.ToLower(srcURL), ".svg") {
 		entry.isSVG = true
-		entry.svgData = bodyBytes
+		entry.data = bodyBytes
 		entry.format = "svg"
 		return
 	}
 
-	// Decode image
-	img, format, err := image.Decode(bytes.NewReader(bodyBytes))
+	img, err := vips.NewImageFromBuffer(bodyBytes)
 	if err != nil {
 		entry.err = fmt.Errorf("decode-failed; %v", err)
 		return
 	}
+	defer img.Close()
 
-	// Enforce max size (1600px default) for the cached source
-	img = enforceMaxSize(img)
+	origFormat := formatName(img.OriginalFormat())
 
-	entry.img = img
-	entry.format = format
+	// GIF: skip vips re-encode (only first frame survives the export round-trip
+	// and we want to keep the GIF passthrough behavior). Cache the original bytes.
+	if origFormat == "gif" {
+		entry.data = bodyBytes
+		entry.format = "gif"
+		return
+	}
+
+	if err := enforceMaxSize(img); err != nil {
+		entry.err = fmt.Errorf("resize-failed; %v", err)
+		return
+	}
+
+	// Re-encode as AVIF for compact source caching
+	data, err := encodeAVIF(img, AVIFQuality)
+	if err != nil {
+		entry.err = fmt.Errorf("source-encode-failed; %v", err)
+		return
+	}
+
+	entry.data = data
+	entry.format = origFormat
 }
 
 // ---------------------------------------------------------------------------
@@ -306,80 +306,96 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 // fetchAndResize gets the source image (from cache or remote), resizes, and encodes.
 // Respects the provided context for cancellation/timeout.
 func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, useAVIF, useWebP bool) *ResizeResult {
-	// Get source (cached or fresh, coalesced across concurrent requests)
 	source := pool.ensureSource(ctx, srcURL)
 	if source.err != nil {
 		return &ResizeResult{Err: source.err}
 	}
 
-	// SVG passthrough - no resize
 	if source.isSVG {
 		return &ResizeResult{
-			Data:        source.svgData,
+			Data:        source.data,
 			ContentType: "image/svg+xml",
 			Format:      "svg",
 			Info:        "source-cache; format=svg; no-manipulation",
 		}
 	}
 
-	// Resize from source
+	img, err := vips.NewImageFromBuffer(source.data)
+	if err != nil {
+		return &ResizeResult{Err: fmt.Errorf("source-decode-failed; %v", err)}
+	}
+	defer img.Close()
+
 	format := source.format
-	img := resizeImage(source.img, params)
 
-	// Encode to best available format
-	var outputData []byte
-	var mimeType string
-	var outputFormat string
-	var buf bytes.Buffer
+	if err := resizeImage(img, params); err != nil {
+		return &ResizeResult{Err: fmt.Errorf("resize-failed; %v", err)}
+	}
 
-	if format != "gif" && useAVIF {
+	var (
+		outputData   []byte
+		mimeType     string
+		outputFormat string
+	)
+
+	switch {
+	case format == "gif":
+		mimeType = "image/gif"
+		outputFormat = "gif"
+		outputData, err = encodeGIF(img)
+		if err != nil {
+			log.Printf("GIF encode failed: %v", err)
+			return &ResizeResult{Err: fmt.Errorf("gif-encode-failed; %v", err)}
+		}
+	case useAVIF:
 		log.Printf("Attempting AVIF encoding for format: %s", format)
-		data, err := encodeAVIF(img, AVIFQuality)
-		if err == nil {
+		data, aerr := encodeAVIF(img, AVIFQuality)
+		if aerr == nil {
 			log.Printf("AVIF encoding successful, output size: %.1f KB", float64(len(data))/1024.0)
 			outputData = data
 			mimeType = "image/avif"
 			outputFormat = "avif"
-		} else {
-			log.Printf("AVIF encoding failed, trying WebP fallback: %v", err)
-			if useWebP {
-				data, err := encodeWebP(img, AVIFQuality)
-				if err == nil {
-					outputData = data
-					mimeType = "image/webp"
-					outputFormat = "webp"
-				} else {
-					log.Printf("WebP encoding also failed, falling back to original format: %v", err)
-					encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-					outputData = buf.Bytes()
-				}
+		} else if useWebP {
+			log.Printf("AVIF failed (%v), trying WebP", aerr)
+			data, werr := encodeWebP(img, AVIFQuality)
+			if werr == nil {
+				outputData = data
+				mimeType = "image/webp"
+				outputFormat = "webp"
 			} else {
-				encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-				outputData = buf.Bytes()
+				log.Printf("WebP encoding also failed (%v), falling back", werr)
+				outputData, mimeType, outputFormat, err = encodeFallback(format, img)
+				if err != nil {
+					return &ResizeResult{Err: fmt.Errorf("encode-failed; %v", err)}
+				}
+			}
+		} else {
+			log.Printf("AVIF failed (%v), falling back", aerr)
+			outputData, mimeType, outputFormat, err = encodeFallback(format, img)
+			if err != nil {
+				return &ResizeResult{Err: fmt.Errorf("encode-failed; %v", err)}
 			}
 		}
-	} else if format != "gif" && useWebP {
+	case useWebP:
 		log.Printf("Attempting WebP encoding for format: %s", format)
-		data, err := encodeWebP(img, AVIFQuality)
-		if err == nil {
-			log.Printf("WebP encoding successful with Google libwebp, output size: %.1f KB", float64(len(data))/1024.0)
+		data, werr := encodeWebP(img, AVIFQuality)
+		if werr == nil {
+			log.Printf("WebP encoding successful, output size: %.1f KB", float64(len(data))/1024.0)
 			outputData = data
 			mimeType = "image/webp"
 			outputFormat = "webp"
 		} else {
-			log.Printf("WebP encoding failed, falling back to original format: %v", err)
-			encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-			outputData = buf.Bytes()
+			log.Printf("WebP encoding failed (%v), falling back", werr)
+			outputData, mimeType, outputFormat, err = encodeFallback(format, img)
+			if err != nil {
+				return &ResizeResult{Err: fmt.Errorf("encode-failed; %v", err)}
+			}
 		}
-	} else if format != "gif" {
-		encodeFallback(format, img, &buf, &mimeType, &outputFormat)
-		outputData = buf.Bytes()
-	} else {
-		// GIF: only first frame preserved
-		mimeType = "image/gif"
-		outputFormat = "gif"
-		gif.Encode(&buf, img, &gif.Options{})
-		outputData = buf.Bytes()
+	default:
+		outputData, mimeType, outputFormat, err = encodeFallback(format, img)
+		if err != nil {
+			return &ResizeResult{Err: fmt.Errorf("encode-failed; %v", err)}
+		}
 	}
 
 	return &ResizeResult{
@@ -409,7 +425,6 @@ func generateSpinnerSVG(width, height int) []byte {
 	cx := width / 2
 	cy := height / 2
 
-	// Scale spinner radius based on smallest dimension, clamped 6..20
 	r := minInt(width, height) / 6
 	if r < 6 {
 		r = 6
@@ -418,7 +433,6 @@ func generateSpinnerSVG(width, height int) []byte {
 		r = 20
 	}
 
-	// Spinner arc: 25% visible, 75% gap
 	circumference := 2 * 3.14159 * float64(r)
 	dash := circumference * 0.25
 	gap := circumference * 0.75
@@ -466,7 +480,6 @@ func generateErrorSVG(width, height int) []byte {
 	cx := width / 2
 	cy := height / 2
 
-	// Scale icon based on smallest dimension, clamped 8..24
 	r := minInt(width, height) / 5
 	if r < 8 {
 		r = 8
@@ -475,7 +488,6 @@ func generateErrorSVG(width, height int) []byte {
 		r = 24
 	}
 
-	// Error icon: circle with exclamation mark
 	svg := fmt.Sprintf(`<svg width="%d" height="%d" xmlns="http://www.w3.org/2000/svg">
   <rect x="0.5" y="0.5" width="%d" height="%d" fill="#fff8f8" stroke="#f0c0c0" stroke-width="1" rx="6" ry="6"/>
   <circle cx="%d" cy="%d" r="%d" fill="none" stroke="#daa" stroke-width="1.5"/>
