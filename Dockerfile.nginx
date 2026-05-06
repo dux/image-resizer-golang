@@ -1,8 +1,8 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache gcc musl-dev sqlite-dev libwebp-dev
+# Install build dependencies (libvips for image processing via govips)
+RUN apk add --no-cache gcc musl-dev pkgconfig sqlite-dev vips-dev
 
 WORKDIR /app
 
@@ -21,12 +21,12 @@ RUN CGO_ENABLED=1 GOOS=linux \
 # Runtime stage with Nginx
 FROM alpine:latest
 
-# Install runtime dependencies including nginx and supervisor
+# Install runtime dependencies (libvips, nginx, supervisor)
 RUN apk add --no-cache \
     ca-certificates \
     sqlite-libs \
-    libwebp \
-    libwebp-tools \
+    vips \
+    vips-heif \
     nginx \
     supervisor
 

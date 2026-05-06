@@ -19,7 +19,18 @@ A fast image resizing service built in Go with AVIF/WebP support, two-layer cach
 
 ## Quick Start
 
+Image work is delegated to **libvips** (via [govips](https://github.com/davidbyttow/govips)), so libvips ≥8.14 must be on the host. Use Docker if you don't want to install it.
+
 ```bash
+# macOS
+brew install vips
+
+# Debian/Ubuntu (24.04+ ships 8.15)
+sudo apt install libvips-dev
+
+# Alpine
+apk add vips-dev vips-heif
+
 git clone https://github.com/dux/image-resizer-golang.git
 cd image-resizer-golang
 go mod download
@@ -280,15 +291,20 @@ docker-compose --profile dev up -d
 
 ## Dependencies
 
+System:
+
+| Library | Purpose |
+|---|---|
+| `libvips` ≥8.14 | All image decode/resize/encode (native, SIMD, libheif/aom for AVIF, libwebp for WebP) |
+
+Go:
+
 | Package | Purpose |
 |---|---|
-| `disintegration/imaging` | Resize/crop with Lanczos filter |
-| `gen2brain/avif` | AVIF encode/decode |
-| `kolesa-team/go-webp` | WebP encode (Google libwebp) |
+| `davidbyttow/govips/v2` | libvips bindings - resize, crop, AVIF/WebP/JPEG/PNG/GIF encode |
 | `mattn/go-sqlite3` | SQLite driver |
 | `gorilla/websocket` | WebSocket for live logs |
 | `joho/godotenv` | .env file loading |
-| `golang.org/x/image` | WebP decoder |
 
 ## License
 
