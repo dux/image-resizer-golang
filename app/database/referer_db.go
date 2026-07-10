@@ -112,7 +112,7 @@ func ExtractBaseDomain(referer string) string {
 
 	// Remove www. prefix
 	host = strings.TrimPrefix(host, "www.")
-	
+
 	// Remove port if present
 	if idx := strings.Index(host, ":"); idx != -1 {
 		host = host[:idx]
@@ -133,7 +133,7 @@ func TrackReferer(referer string) error {
 		ON CONFLICT(base_domain, date_requested)
 		DO UPDATE SET request_count = request_count + 1
 	`
-	
+
 	// Retry logic for busy database
 	var err error
 	for i := 0; i < 3; i++ {
@@ -189,9 +189,9 @@ type RefererStat struct {
 
 // DomainStat represents aggregated stats for a domain
 type DomainStat struct {
-	BaseDomain   string
-	TotalCount   int
-	IsDisabled   bool
+	BaseDomain string
+	TotalCount int
+	IsDisabled bool
 }
 
 // GetAggregatedRefererStats returns referer statistics grouped by domain
@@ -231,13 +231,13 @@ func IsDomainDisabled(domain string) (bool, error) {
 		SELECT COUNT(*) FROM referer_tracking 
 		WHERE base_domain = ? AND is_disabled = TRUE
 	`
-	
+
 	var count int
 	err := RefererDB.QueryRow(query, domain).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check domain status: %w", err)
 	}
-	
+
 	return count > 0, nil
 }
 
@@ -249,11 +249,11 @@ func ToggleDomainStatus(domain string) error {
 		SET is_disabled = NOT is_disabled 
 		WHERE base_domain = ?
 	`
-	
+
 	_, err := RefererDB.Exec(query, domain)
 	if err != nil {
 		return fmt.Errorf("failed to toggle domain status: %w", err)
 	}
-	
+
 	return nil
 }
