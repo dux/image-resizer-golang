@@ -86,6 +86,32 @@ func InitAllowedDomains() {
 	}
 }
 
+// forcedFormats are output formats requestable via a path extension
+// (/r.glb, /r/w300.png) or the f= param. "glb" applies to STEP sources only.
+var forcedFormats = map[string]bool{
+	"png": true, "jpg": true, "jpeg": true, "webp": true,
+	"avif": true, "gif": true, "glb": true,
+}
+
+// ForcedExtensions lists the extensions registered as /r.{ext} routes in main.
+var ForcedExtensions = []string{"png", "jpg", "jpeg", "webp", "avif", "gif", "glb"}
+
+// splitFormatExt strips a trailing .ext from a params path segment when ext is
+// a known forced format. Only known formats strip, so dotted cam vectors like
+// cam=-1,1,-0.5 pass through untouched. Returns the remaining segment and the
+// lowercased ext ("" if none).
+func splitFormatExt(path string) (string, string) {
+	if idx := strings.LastIndex(path, "."); idx != -1 {
+		if ext := strings.ToLower(path[idx+1:]); forcedFormats[ext] {
+			return path[:idx], ext
+		}
+	}
+	return path, ""
+}
+
+// SplitFormatExtForTest exposes splitFormatExt for tests
+func SplitFormatExtForTest(p string) (string, string) { return splitFormatExt(p) }
+
 // formatName normalizes a vips ImageType to a friendly format string.
 // vips maps AVIF to "heif" internally, but we surface "avif" for clarity
 // and existing cache-format compatibility.
@@ -170,6 +196,38 @@ func encodeFallback(format string, img *vips.ImageRef) ([]byte, string, string, 
 		data, err := encodeJPEG(img, AVIFQuality)
 		return data, "image/jpeg", "jpeg", err
 	}
+}
+
+// encodeForced encodes img in an explicitly requested format - unlike
+// encodeFallback there is no silent fallback, failure is an error.
+func encodeForced(format string, img *vips.ImageRef) ([]byte, string, string, error) {
+	switch format {
+	case "png":
+		data, err := encodePNG(img)
+		return data, "image/png", "png", err
+	case "jpg", "jpeg":
+		data, err := encodeJPEG(img, AVIFQuality)
+		return data, "image/jpeg", "jpeg", err
+	case "webp":
+		data, err := encodeWebP(img, AVIFQuality)
+		return data, "image/webp", "webp", err
+	case "avif":
+		data, err := encodeAVIF(img, AVIFQuality)
+		return data, "image/avif", "avif", err
+	case "gif":
+		data, err := encodeGIF(img)
+		return data, "image/gif", "gif", err
+	}
+	return nil, "", "", fmt.Errorf("unsupported forced format '%s'", format)
+}
+
+// encodeWebPLossless exports lossless WebP (used for STEP render source cache).
+func encodeWebPLossless(img *vips.ImageRef) ([]byte, error) {
+	params := vips.NewWebpExportParams()
+	params.Lossless = true
+	params.StripMetadata = true
+	data, _, err := img.ExportWebp(params)
+	return data, err
 }
 
 // isAllowedSource checks if the source URL's domain is in the whitelist.
@@ -282,11 +340,41 @@ type ResizeParams struct {
 	Height   int
 	CropMode bool
 	CacheKey string
+	Format   string // forced output format, "" = negotiate via Accept; "glb" = STEP to GLB
+	CamDir   string // f3d camera direction vector (STEP renders)
+	CamKey   string // cam token for cache keys (STEP renders)
 }
 
 // parseResizeParams parses w=100x100 or c=100x100 parameters (also accepts width/height/crop)
 func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 	params := &ResizeParams{}
+
+	// Forced output format: f=png|jpg|webp|avif|gif|glb ("jpeg" normalized to "jpg")
+	if f := strings.ToLower(r.URL.Query().Get("f")); f != "" {
+		if !forcedFormats[f] {
+			return nil, fmt.Errorf("invalid f parameter '%s'", f)
+		}
+		if f == "jpeg" {
+			f = "jpg"
+		}
+		params.Format = f
+	}
+
+	// to=glb kept as a back-compat alias for f=glb / the .glb extension
+	if to := r.URL.Query().Get("to"); to != "" {
+		if to != "glb" {
+			return nil, fmt.Errorf("invalid to parameter '%s', only 'glb' is supported", to)
+		}
+		params.Format = "glb"
+	}
+	if cam := r.URL.Query().Get("cam"); cam != "" {
+		dir, key, err := parseCam(cam)
+		if err != nil {
+			return nil, err
+		}
+		params.CamDir = dir
+		params.CamKey = key
+	}
 
 	cropStr := r.URL.Query().Get("c")
 	if cropStr == "" {
@@ -505,10 +593,19 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		r.Form = values
 	}
 
-	// Parse the new URL format: /r/w=200?https://...
-	path := strings.TrimPrefix(r.URL.Path, "/r/")
+	// URL forms: /r/w300?src, /r/w300.png?src (forced format), /r.glb?src (format only)
+	var path, forcedExt string
+	pathForm := false
+	if strings.HasPrefix(r.URL.Path, "/r.") {
+		forcedExt = strings.ToLower(strings.TrimPrefix(r.URL.Path, "/r."))
+		pathForm = true
+	} else if p := strings.TrimPrefix(r.URL.Path, "/r/"); p != "" && p != "r" {
+		pathForm = true
+		path, forcedExt = splitFormatExt(p)
+	}
+
 	var params *ResizeParams
-	if path != "" && path != "r" {
+	if path != "" {
 		paramParts := strings.Split(path, "?")
 		if len(paramParts) > 0 {
 			fakeReq := &http.Request{URL: &url.URL{}}
@@ -548,6 +645,8 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	} else if pathForm {
+		params = &ResizeParams{} // /r.{ext} with no params segment
 	} else {
 		var err error
 		params, err = parseResizeParams(r)
@@ -557,9 +656,16 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if forcedExt != "" {
+		if forcedExt == "jpeg" {
+			forcedExt = "jpg"
+		}
+		params.Format = forcedExt
+	}
+
 	// The source URL is now the entire query string for new format
 	var srcURL string
-	if path != "" && path != "r" && r.URL.RawQuery != "" {
+	if pathForm && r.URL.RawQuery != "" {
 		srcURL = r.URL.RawQuery
 	} else {
 		srcURL = r.URL.Query().Get("src")
@@ -621,15 +727,35 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GLB conversion path (STEP models) - no format negotiation, no resize
+	if params.Format == "glb" {
+		serveGLB(w, srcURL, params)
+		return
+	}
+
 	useAVIF := acceptsAVIF(r)
 	useWebP := acceptsWebP(r)
 	formatSuffix := "jpg"
-	if useAVIF {
-		formatSuffix = "avif"
-	} else if useWebP {
-		formatSuffix = "webp"
+	if params.Format != "" {
+		// Forced format: deterministic output, skip Accept negotiation
+		formatSuffix = params.Format
+		useAVIF, useWebP = false, false
+	} else {
+		w.Header().Set("Vary", "Accept")
+		if useAVIF {
+			formatSuffix = "avif"
+		} else if useWebP {
+			formatSuffix = "webp"
+		}
 	}
 	cacheKey := params.CacheKey + "_" + formatSuffix
+	if isStepSource(srcURL) {
+		camKey := params.CamKey
+		if camKey == "" {
+			camKey = "iso"
+		}
+		cacheKey = "cam-" + camKey + "_" + cacheKey
+	}
 
 	cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheKey)
 	if err != nil {
@@ -680,5 +806,57 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(WorkerWaitTimeout):
 		log.Printf("Worker timeout for %s (key: %s), returning spinner", srcURL, cacheKey)
 		serveSpinnerSVG(w, params)
+	}
+}
+
+// serveGLB handles /r.glb?url (alias /r/to=glb) - STEP to GLB conversion, cached under key
+// "glb". CORS is open because three.js loads models via fetch, not <img>.
+func serveGLB(w http.ResponseWriter, srcURL string, params *ResizeParams) {
+	cacheKey := "glb"
+
+	writeGLBHeaders := func(size int, xCache string) {
+		w.Header().Set("Content-Type", "model/gltf-binary")
+		w.Header().Set("Content-Length", strconv.Itoa(size))
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", MaxAge))
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("X-Cache", xCache)
+	}
+
+	cachedData, _, _, err := database.GetCachedImage(srcURL, cacheKey)
+	if err != nil {
+		log.Printf("Error checking cache: %v", err)
+	}
+	if cachedData != nil {
+		log.Printf("Serving cached GLB for %s", srcURL)
+		writeGLBHeaders(len(cachedData), "HIT")
+		w.Write(cachedData)
+		return
+	}
+
+	job := &ResizeJob{
+		SrcURL:   srcURL,
+		Params:   params,
+		CacheKey: cacheKey,
+	}
+
+	entry := pool.Submit(job)
+
+	select {
+	case <-entry.done:
+		result := entry.result
+		if result.Err != nil {
+			http.Error(w, fmt.Sprintf("STEP to GLB failed: %v", result.Err), http.StatusUnprocessableEntity)
+			return
+		}
+		writeGLBHeaders(len(result.Data), "MISS")
+		w.Header().Set("X-Info", result.Info)
+		w.Write(result.Data)
+
+	case <-time.After(WorkerWaitTimeout):
+		log.Printf("Worker timeout for %s (key: %s), returning 202", srcURL, cacheKey)
+		w.Header().Set("Retry-After", "10")
+		w.Header().Set("Cache-Control", "no-cache, max-age=10")
+		w.Header().Set("X-Cache", "QUEUED")
+		http.Error(w, "GLB conversion in progress, retry shortly", http.StatusAccepted)
 	}
 }

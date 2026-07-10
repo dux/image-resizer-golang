@@ -135,17 +135,23 @@ func (p *WorkerPool) worker(id int) {
 	}
 }
 
-// processTask fetches, resizes, caches, and notifies waiters
+// processTask fetches, resizes (or converts), caches, and notifies waiters
 func (p *WorkerPool) processTask(task *workerTask) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	result := fetchAndResize(ctx, task.job.SrcURL, task.job.Params, task.job.UseAVIF, task.job.UseWebP)
+	var result *ResizeResult
+	if task.job.Params.Format == "glb" {
+		result = fetchAndConvertGLB(ctx, task.job.SrcURL)
+	} else {
+		result = fetchAndResize(ctx, task.job.SrcURL, task.job.Params, task.job.UseAVIF, task.job.UseWebP)
+	}
 	cancel()
 
 	task.entry.result = result
 	close(task.entry.done)
 
 	if result.Err == nil && result.Format != "svg" {
-		if task.job.Params.Width > 0 || task.job.Params.Height > 0 {
+		p := task.job.Params
+		if p.Width > 0 || p.Height > 0 || p.Format != "" {
 			go func() {
 				if err := database.CacheImage(task.job.SrcURL, task.job.CacheKey, result.Data, result.ContentType, result.Format); err != nil {
 					log.Printf("Failed to cache resized image: %v", err)
@@ -165,20 +171,33 @@ func (p *WorkerPool) processTask(task *workerTask) {
 // enforced, re-encoded as AVIF for compact caching), either from DB cache or
 // by fetching from remote. Concurrent requests for the same source URL are
 // coalesced - only one goroutine fetches.
-func (p *WorkerPool) ensureSource(ctx context.Context, srcURL string) *sourceResult {
+//
+// STEP sources are rendered to an image via f3d; the render is cached per
+// camera direction (camDir/camKey from the cam param, default iso).
+func (p *WorkerPool) ensureSource(ctx context.Context, srcURL, camDir, camKey string) *sourceResult {
+	sourceKey := "source"
+	isStep := isStepSource(srcURL)
+	if isStep {
+		if camKey == "" {
+			camKey = "iso"
+		}
+		sourceKey = "source_cam-" + camKey
+	}
+
 	// 1. Check DB cache for source
-	cachedData, _, cachedFormat, err := database.GetCachedImage(srcURL, "source")
+	cachedData, _, cachedFormat, err := database.GetCachedImage(srcURL, sourceKey)
 	if err == nil && cachedData != nil {
-		log.Printf("Source cache HIT for %s (format: %s)", srcURL, cachedFormat)
+		log.Printf("Source cache HIT for %s (key: %s, format: %s)", srcURL, sourceKey, cachedFormat)
 		if cachedFormat == "svg" {
 			return &sourceResult{isSVG: true, data: cachedData, format: "svg"}
 		}
 		return &sourceResult{data: cachedData, format: cachedFormat}
 	}
 
-	// 2. Coalesce concurrent source fetches for the same URL
+	// 2. Coalesce concurrent source fetches for the same URL + source key
+	inflightKey := srcURL + "|" + sourceKey
 	newEntry := &sourceResult{done: make(chan struct{})}
-	actual, loaded := p.sourceInflight.LoadOrStore(srcURL, newEntry)
+	actual, loaded := p.sourceInflight.LoadOrStore(inflightKey, newEntry)
 	entry := actual.(*sourceResult)
 
 	if loaded {
@@ -191,8 +210,12 @@ func (p *WorkerPool) ensureSource(ctx context.Context, srcURL string) *sourceRes
 		}
 	}
 
-	// 3. We're the first - fetch from remote
-	fetchSourceRemote(ctx, srcURL, entry)
+	// 3. We're the first - fetch from remote (STEP: fetch raw + render)
+	if isStep {
+		renderStepSource(ctx, p, srcURL, camDir, entry)
+	} else {
+		fetchSourceRemote(ctx, srcURL, entry)
+	}
 
 	// 4. Notify all waiting workers (they can start resizing immediately)
 	close(entry.done)
@@ -202,28 +225,28 @@ func (p *WorkerPool) ensureSource(ctx context.Context, srcURL string) *sourceRes
 		mime := "image/avif"
 		if entry.isSVG {
 			mime = "image/svg+xml"
+		} else if isStep {
+			mime = "image/webp" // STEP renders are cached as lossless WebP
 		}
-		if err := database.CacheImage(srcURL, "source", entry.data, mime, entry.format); err != nil {
+		if err := database.CacheImage(srcURL, sourceKey, entry.data, mime, entry.format); err != nil {
 			log.Printf("Failed to cache source: %v", err)
 		} else if !entry.isSVG {
-			log.Printf("Source cached for %s (original: %s, stored as AVIF, %.1f KB)",
-				srcURL, entry.format, float64(len(entry.data))/1024.0)
+			log.Printf("Source cached for %s (key: %s, original: %s, stored as %s, %.1f KB)",
+				srcURL, sourceKey, entry.format, mime, float64(len(entry.data))/1024.0)
 		}
 	}
 
-	p.sourceInflight.Delete(srcURL)
+	p.sourceInflight.Delete(inflightKey)
 
 	return entry
 }
 
-// fetchSourceRemote downloads an image from a remote URL, decodes it via vips,
-// enforces max size, re-encodes as AVIF for compact caching, and populates
-// the sourceResult entry. SVG bypasses decode and is stored verbatim.
-func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) {
+// downloadBytes fetches a remote URL body with browser-like headers.
+// Returns the body bytes and the response Content-Type.
+func downloadBytes(ctx context.Context, srcURL string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", srcURL, nil)
 	if err != nil {
-		entry.err = fmt.Errorf("create-request; %v", err)
-		return
+		return nil, "", fmt.Errorf("create-request; %v", err)
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0")
@@ -235,28 +258,35 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		entry.err = fmt.Errorf("fetch-failed; %v", err)
-		return
+		return nil, "", fmt.Errorf("fetch-failed; %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		entry.err = fmt.Errorf("fetch-failed; status=%d", resp.StatusCode)
-		return
+		return nil, "", fmt.Errorf("fetch-failed; status=%d", resp.StatusCode)
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		entry.err = fmt.Errorf("read-failed; %v", err)
-		return
+		return nil, "", fmt.Errorf("read-failed; %v", err)
 	}
 
 	if len(bodyBytes) == 0 {
-		entry.err = fmt.Errorf("empty-data")
-		return
+		return nil, "", fmt.Errorf("empty-data")
 	}
 
-	contentType := resp.Header.Get("Content-Type")
+	return bodyBytes, resp.Header.Get("Content-Type"), nil
+}
+
+// fetchSourceRemote downloads an image from a remote URL, decodes it via vips,
+// enforces max size, re-encodes as AVIF for compact caching, and populates
+// the sourceResult entry. SVG bypasses decode and is stored verbatim.
+func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) {
+	bodyBytes, contentType, err := downloadBytes(ctx, srcURL)
+	if err != nil {
+		entry.err = err
+		return
+	}
 
 	// SVG passthrough (no decode)
 	if strings.Contains(contentType, "svg") || strings.HasSuffix(strings.ToLower(srcURL), ".svg") {
@@ -264,6 +294,18 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 		entry.data = bodyBytes
 		entry.format = "svg"
 		return
+	}
+
+	// STEP sniff for URLs without a .step extension: render a default-cam
+	// snapshot and continue through the normal image pipeline. Cam variants
+	// need the .step/.stp extension (detected before download).
+	if isStepData(bodyBytes) {
+		png, rerr := renderStepPNG(ctx, bodyBytes, "")
+		if rerr != nil {
+			entry.err = rerr
+			return
+		}
+		bodyBytes = png
 	}
 
 	img, err := vips.NewImageFromBuffer(bodyBytes)
@@ -306,12 +348,13 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 // fetchAndResize gets the source image (from cache or remote), resizes, and encodes.
 // Respects the provided context for cancellation/timeout.
 func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, useAVIF, useWebP bool) *ResizeResult {
-	source := pool.ensureSource(ctx, srcURL)
+	source := pool.ensureSource(ctx, srcURL, params.CamDir, params.CamKey)
 	if source.err != nil {
 		return &ResizeResult{Err: source.err}
 	}
 
-	if source.isSVG {
+	// SVG passthrough - unless a format is forced, then rasterize via vips below
+	if source.isSVG && params.Format == "" {
 		return &ResizeResult{
 			Data:        source.data,
 			ContentType: "image/svg+xml",
@@ -339,6 +382,11 @@ func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, us
 	)
 
 	switch {
+	case params.Format != "":
+		outputData, mimeType, outputFormat, err = encodeForced(params.Format, img)
+		if err != nil {
+			return &ResizeResult{Err: fmt.Errorf("encode-failed; %v", err)}
+		}
 	case format == "gif":
 		mimeType = "image/gif"
 		outputFormat = "gif"

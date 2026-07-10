@@ -14,6 +14,7 @@ A fast image resizing service built in Go with AVIF/WebP support, two-layer cach
 - **Domain management** - block/allow domains via referer tracking
 - **SSRF protection** - blocks private/internal IP ranges
 - **Multiple resize modes** - width, height, fit, crop with smart 70/30 vertical focus
+- **STEP (CAD) support** - render snapshots with camera control, convert to GLB for three.js
 - **SQLite caching** - WAL mode, auto-cleanup, paginated API
 - **Live logs** - WebSocket-powered real-time log viewer
 
@@ -70,6 +71,71 @@ Source URLs without protocol default to `https://`. Examples:
 ```
 
 Both `w200` and `w=200` and `w_200` formats work.
+
+### Forced output format
+
+By default the output format is negotiated via the `Accept` header (AVIF > WebP > JPEG).
+Append a file extension to force a specific format instead - deterministic output, no negotiation, no `Vary: Accept`:
+
+```bash
+# Forced PNG at 300px wide
+/r/w300.png?example.com/image.jpg
+
+# Format only, no resize
+/r.png?example.com/image.jpg
+
+# Rasterize an SVG
+/r/w300.png?example.com/logo.svg
+```
+
+Supported extensions: `png`, `jpg`/`jpeg`, `webp`, `avif`, `gif`, `glb` (STEP sources only).
+An `f=` parameter works too (`/r/w300&f=png?...`, `/resize?src=...&f=png`).
+
+## STEP (CAD) Support
+
+Sources ending in `.step`/`.stp` get two extra capabilities:
+
+```bash
+# Render a snapshot (goes through the normal resize/format pipeline)
+/r/w600?example.com/part.step
+
+# Pick the camera: iso (default), front, back, top, bottom, left, right, or x,y,z
+/r/w600&cam=top?example.com/part.step
+/r/c300&cam=-1,1,-0.5?example.com/part.step
+
+# Deterministic PNG render (no format negotiation)
+/r/w600.png?example.com/part.step
+
+# Convert to GLB (binary glTF, loads straight into three.js GLTFLoader)
+/r.glb?example.com/part.step        # alias: /r/to=glb?...
+```
+
+Renders are produced by [f3d](https://f3d.app) (white background, anti-aliased,
+ambient occlusion, Z-up) and then behave like any image: AVIF/WebP/JPEG
+negotiation, resize variants, caching, spinner on slow jobs. GLB conversion
+runs through OpenCascade `DRAWEXE` (see `scripts/step2glb`) and is served with
+`Access-Control-Allow-Origin: *` so three.js can fetch it cross-origin.
+
+Cache entries per STEP URL: raw bytes (`step`, downloaded once), `glb`, one
+source render per camera (`source_cam-iso`), plus the usual resize variants
+(`cam-iso_w_600_avif`).
+
+Tools are optional and resolved from env (`F3D_BIN`, `STEP2GLB_BIN`); without
+them STEP requests fail gracefully (error SVG / HTTP 422).
+
+```bash
+# macOS
+brew install f3d opencascade
+
+# Debian/Ubuntu (DRAWEXE + headless GL for f3d)
+sudo apt install occt-draw libosmesa6 libegl1
+# f3d: install the release .deb from https://github.com/f3d-app/f3d/releases
+# DRAW dlopens unversioned plugin libs that only ship in -dev packages;
+# add the symlinks (the Dockerfile does the same):
+for f in /usr/lib/*/libTK*.so.*; do
+  base="${f%%.so.*}"; [ -e "$base.so" ] || sudo ln -s "$(basename "$f")" "$base.so"
+done
+```
 
 ## Architecture
 
@@ -186,6 +252,8 @@ All admin routes require Basic Auth (default `ir:ir`, configure via `HTTP_USER_A
 | `MAX_DB_SIZE` | `1000` | Max SQLite cache size in MB before auto-cleanup |
 | `ALLOWED_DOMAINS` | _(all)_ | Comma-separated allowed source domains, supports `*.example.com` |
 | `HTTP_USER_AND_PASS` | `ir:ir` | Basic auth credentials for admin pages (`user:pass`) |
+| `F3D_BIN` | `f3d` | f3d binary for STEP rendering |
+| `STEP2GLB_BIN` | `scripts/step2glb` | STEP to GLB converter (DRAWEXE wrapper; honors `DRAWEXE_BIN`) |
 
 Also loads from `.env` file if present.
 
@@ -219,6 +287,8 @@ Also loads from `.env` file if present.
 |---|---|---|
 | `GET /` | No | Home page |
 | `GET /r/{params}?{url}` | No | Resize image |
+| `GET /r/{params}.{ext}?{url}` | No | Resize with forced output format |
+| `GET /r.{ext}?{url}` | No | Forced output format, no resize |
 | `GET /resize?src={url}&w=N` | No | Legacy resize |
 | `GET /i?src={path}` | No | Local image info (JSON) |
 | `GET /demo` | No | Interactive demo page |
@@ -240,6 +310,7 @@ app/
   handlers/
     resize.go               # URL parsing, format negotiation, resize logic
     worker.go               # Worker pool, source caching, coalescing, SVG generators
+    step.go                 # STEP support: f3d renders, GLB conversion, cam parsing
     config.go               # Admin dashboard, cache management, auth middleware
     home.go                 # Template init, home page handler
     logs.go                 # WebSocket live logs
@@ -258,8 +329,11 @@ templates/
   config.html               # Admin dashboard
   cache.html                # Cache explorer with pagination
   logs.html                 # Live log viewer
+scripts/
+  step2glb                  # STEP -> GLB wrapper around OpenCascade DRAWEXE
 test/
   resize_test.go            # 30+ tests + benchmarks
+  step_test.go              # STEP detection, cam parsing, GLB validation
 ```
 
 ## Development
@@ -289,6 +363,10 @@ docker-compose --profile nginx up -d
 docker-compose --profile dev up -d
 ```
 
+The image is Debian-based and bundles the full STEP toolchain (occt-draw,
+f3d, OSMesa for headless GL). The f3d release .deb is x86_64-only, so build
+with `--platform linux/amd64` on ARM hosts (Apple Silicon).
+
 ## Dependencies
 
 System:
@@ -296,6 +374,8 @@ System:
 | Library | Purpose |
 |---|---|
 | `libvips` ≥8.14 | All image decode/resize/encode (native, SIMD, libheif/aom for AVIF, libwebp for WebP) |
+| `f3d` _(optional)_ | STEP model rendering to images |
+| `DRAWEXE` _(optional)_ | STEP to GLB conversion (OpenCascade, via `scripts/step2glb`) |
 
 Go:
 

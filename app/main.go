@@ -29,6 +29,9 @@ func main() {
 	// Initialize allowed domains (must be after .env load)
 	handlers.InitAllowedDomains()
 
+	// Resolve external STEP tool binaries (must be after .env load)
+	handlers.InitStepTools()
+
 	// Initialize database
 	if err := database.InitDB(); err != nil {
 		log.Fatal("Failed to initialize database:", err)
@@ -55,6 +58,10 @@ func main() {
 	mux.HandleFunc("/", handlers.HomeHandler)
 	mux.HandleFunc("/i", handlers.ImageInfoHandler)
 	mux.HandleFunc("/r/", handlers.ResizeHandler)
+	// /r.png, /r.glb, ... - forced output format, format-only variant
+	for _, ext := range handlers.ForcedExtensions {
+		mux.HandleFunc("/r."+ext, handlers.ResizeHandler)
+	}
 	mux.HandleFunc("/resize", handlers.ResizeHandler)
 	mux.HandleFunc("/demo", handlers.DemoHandler)
 	mux.HandleFunc("/c", handlers.BasicAuth(handlers.ConfigHandler))
