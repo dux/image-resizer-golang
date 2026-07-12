@@ -10,8 +10,10 @@ package handlers
 //                                      (alias: /r/to=glb or f=glb)
 //
 // Extra instructions via params: cam=iso|front|back|top|bottom|left|right or
-// a raw "x,y,z" view direction. Renders are cached per camera in the source
-// layer (key "source_cam-<cam>"), raw STEP bytes once under key "step".
+// a raw "x,y,z" view direction; bg=transparent|none for a transparent PNG
+// background (default is white). Renders are cached per camera/background in
+// the source layer (key "source_cam-<cam>" or "source_cam-<cam>_bg-transparent"),
+// raw STEP bytes once under key "step".
 //
 // External tools resolve from F3D_BIN / STEP2GLB_BIN env vars.
 
@@ -134,6 +136,32 @@ func parseCam(s string) (dir string, key string, err error) {
 	return s, s, nil
 }
 
+// parseBg validates a bg parameter for STEP renders. Empty or "white" keeps
+// the default opaque white background; "transparent" and "none" request an
+// alpha background via f3d --no-background.
+func parseBg(s string) (transparent bool, key string, err error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "", "white":
+		return false, "", nil
+	case "transparent", "none":
+		return true, "transparent", nil
+	default:
+		return false, "", fmt.Errorf("invalid bg '%s', use white (default), transparent, or none", s)
+	}
+}
+
+// stepSourceCacheKey builds the per-render source cache key from cam/bg tokens.
+func stepSourceCacheKey(camKey, bgKey string) string {
+	if camKey == "" {
+		camKey = "iso"
+	}
+	if bgKey != "" {
+		camKey += "_bg-" + bgKey
+	}
+	return "source_cam-" + camKey
+}
+
 // runStepTool executes an external tool in a scratch dir with a timeout,
 // returning the produced output file bytes.
 func runStepTool(ctx context.Context, stepData []byte, outName string, argv func(in, out string) []string) ([]byte, error) {
@@ -173,12 +201,12 @@ func runStepTool(ctx context.Context, stepData []byte, outName string, argv func
 }
 
 // renderStepPNG renders STEP bytes to a PNG snapshot via f3d.
-func renderStepPNG(ctx context.Context, stepData []byte, camDir string) ([]byte, error) {
+func renderStepPNG(ctx context.Context, stepData []byte, camDir string, transparent bool) ([]byte, error) {
 	if camDir == "" {
 		camDir = stepCamPresets["iso"]
 	}
 	return runStepTool(ctx, stepData, "render.png", func(in, out string) []string {
-		return []string{
+		args := []string{
 			f3dBin, in,
 			"--no-config", // ignore user/system config so output is deterministic (no grid/filename/axis chrome)
 			// input is sniff-verified STEP; auto-detection rejects some real-world
@@ -189,11 +217,43 @@ func renderStepPNG(ctx context.Context, stepData []byte, camDir string) ([]byte,
 			"--resolution", fmt.Sprintf("%d,%d", MaxSize, MaxSize),
 			"--camera-direction", camDir,
 			"--up", "+Z",
-			"--background-color", "1,1,1",
 			"--anti-aliasing",
 			"--ambient-occlusion",
 		}
+		if transparent {
+			args = append(args, "--no-background")
+		} else {
+			args = append(args, "--background-color", "1,1,1")
+		}
+		return args
 	})
+}
+
+// trimStepRenderMargins crops f3d's auto-fit padding. Opaque renders trim white
+// borders; transparent renders trim on the alpha channel.
+func trimStepRenderMargins(img *vips.ImageRef, transparent bool) error {
+	var left, top, tw, th int
+	var terr error
+	if transparent {
+		if !img.HasAlpha() {
+			return nil
+		}
+		alpha, err := img.ExtractBandToImage(img.Bands()-1, 1)
+		if err != nil {
+			return err
+		}
+		defer alpha.Close()
+		left, top, tw, th, terr = alpha.FindTrim(10, &vips.Color{R: 0, G: 0, B: 0})
+	} else {
+		left, top, tw, th, terr = img.FindTrim(10, &vips.Color{R: 255, G: 255, B: 255})
+	}
+	if terr != nil {
+		return terr
+	}
+	if tw > 0 && th > 0 && (tw < img.Width() || th < img.Height()) {
+		return img.ExtractArea(left, top, tw, th)
+	}
+	return nil
 }
 
 // convertStepGLB converts STEP bytes to GLB via the step2glb helper.
@@ -276,14 +336,14 @@ func (p *WorkerPool) ensureStepRaw(ctx context.Context, srcURL string) *sourceRe
 // renderStepSource renders a STEP source to a PNG snapshot and stores it in the
 // entry as an AVIF-encoded image, mirroring what fetchSourceRemote does for
 // regular images.
-func renderStepSource(ctx context.Context, p *WorkerPool, srcURL, camDir string, entry *sourceResult) {
+func renderStepSource(ctx context.Context, p *WorkerPool, srcURL, camDir string, transparent bool, entry *sourceResult) {
 	raw := p.ensureStepRaw(ctx, srcURL)
 	if raw.err != nil {
 		entry.err = raw.err
 		return
 	}
 
-	png, err := renderStepPNG(ctx, raw.data, camDir)
+	png, err := renderStepPNG(ctx, raw.data, camDir, transparent)
 	if err != nil {
 		entry.err = err
 		return
@@ -301,14 +361,11 @@ func renderStepSource(ctx context.Context, p *WorkerPool, srcURL, camDir string,
 		return
 	}
 
-	// f3d's camera auto-fit pads the model; trim the white margins so the
-	// subject fills the frame edge to edge
-	left, top, tw, th, terr := img.FindTrim(10, &vips.Color{R: 255, G: 255, B: 255})
-	if terr == nil && tw > 0 && th > 0 && (tw < img.Width() || th < img.Height()) {
-		if err := img.ExtractArea(left, top, tw, th); err != nil {
-			entry.err = fmt.Errorf("render-trim-failed; %v", err)
-			return
-		}
+	// f3d's camera auto-fit pads the model; trim margins so the subject fills
+	// the frame edge to edge
+	if err := trimStepRenderMargins(img, transparent); err != nil {
+		entry.err = fmt.Errorf("render-trim-failed; %v", err)
+		return
 	}
 
 	// Lossless WebP: CAD renders are flat-color line art where lossy AVIF
@@ -335,6 +392,12 @@ func IsStepDataForTest(d []byte) bool { return isStepData(d) }
 
 // ParseCamForTest exposes parseCam for tests
 func ParseCamForTest(s string) (string, string, error) { return parseCam(s) }
+
+// ParseBgForTest exposes parseBg for tests
+func ParseBgForTest(s string) (bool, string, error) { return parseBg(s) }
+
+// StepSourceCacheKeyForTest exposes stepSourceCacheKey for tests
+func StepSourceCacheKeyForTest(camKey, bgKey string) string { return stepSourceCacheKey(camKey, bgKey) }
 
 // ValidateGLBForTest exposes validateGLB for tests
 func ValidateGLBForTest(d []byte) error { return validateGLB(d) }

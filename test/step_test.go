@@ -66,6 +66,46 @@ func TestParseCam(t *testing.T) {
 	}
 }
 
+func TestParseBg(t *testing.T) {
+	for _, c := range []struct {
+		in          string
+		transparent bool
+		key         string
+	}{
+		{"", false, ""},
+		{"white", false, ""},
+		{"transparent", true, "transparent"},
+		{"none", true, "transparent"},
+		{"TRANSPARENT", true, "transparent"},
+	} {
+		transparent, key, err := handlers.ParseBgForTest(c.in)
+		if err != nil || transparent != c.transparent || key != c.key {
+			t.Errorf("parseBg(%q) = (%v, %q, %v), want (%v, %q, nil)", c.in, transparent, key, err, c.transparent, c.key)
+		}
+	}
+	for _, bad := range []string{"black", "opaque", "0"} {
+		if _, _, err := handlers.ParseBgForTest(bad); err == nil {
+			t.Errorf("parseBg(%q) should fail", bad)
+		}
+	}
+}
+
+func TestStepSourceCacheKey(t *testing.T) {
+	cases := []struct {
+		cam, bg, want string
+	}{
+		{"", "", "source_cam-iso"},
+		{"top", "", "source_cam-top"},
+		{"iso", "transparent", "source_cam-iso_bg-transparent"},
+		{"front", "transparent", "source_cam-front_bg-transparent"},
+	}
+	for _, c := range cases {
+		if got := handlers.StepSourceCacheKeyForTest(c.cam, c.bg); got != c.want {
+			t.Errorf("stepSourceCacheKey(%q, %q) = %q, want %q", c.cam, c.bg, got, c.want)
+		}
+	}
+}
+
 func TestValidateGLB(t *testing.T) {
 	// too short / wrong magic
 	if err := handlers.ValidateGLBForTest([]byte("nope")); err == nil {

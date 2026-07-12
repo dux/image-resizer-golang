@@ -341,8 +341,10 @@ type ResizeParams struct {
 	CropMode bool
 	CacheKey string
 	Format   string // forced output format, "" = negotiate via Accept; "glb" = STEP to GLB
-	CamDir   string // f3d camera direction vector (STEP renders)
-	CamKey   string // cam token for cache keys (STEP renders)
+	CamDir        string // f3d camera direction vector (STEP renders)
+	CamKey        string // cam token for cache keys (STEP renders)
+	BgTransparent bool   // STEP render with transparent background (f3d --no-background)
+	BgKey         string // bg token for cache keys (STEP renders); "" = white default
 }
 
 // parseResizeParams parses w=100x100 or c=100x100 parameters (also accepts width/height/crop)
@@ -374,6 +376,14 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 		}
 		params.CamDir = dir
 		params.CamKey = key
+	}
+	if bg := r.URL.Query().Get("bg"); bg != "" {
+		transparent, key, err := parseBg(bg)
+		if err != nil {
+			return nil, err
+		}
+		params.BgTransparent = transparent
+		params.BgKey = key
 	}
 
 	cropStr := r.URL.Query().Get("c")
@@ -753,6 +763,9 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		camKey := params.CamKey
 		if camKey == "" {
 			camKey = "iso"
+		}
+		if params.BgKey != "" {
+			camKey += "_bg-" + params.BgKey
 		}
 		cacheKey = "cam-" + camKey + "_" + cacheKey
 	}

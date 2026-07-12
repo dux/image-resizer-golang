@@ -173,15 +173,12 @@ func (p *WorkerPool) processTask(task *workerTask) {
 // coalesced - only one goroutine fetches.
 //
 // STEP sources are rendered to an image via f3d; the render is cached per
-// camera direction (camDir/camKey from the cam param, default iso).
-func (p *WorkerPool) ensureSource(ctx context.Context, srcURL, camDir, camKey string) *sourceResult {
+// camera direction and background (camDir/camKey/bgKey from params).
+func (p *WorkerPool) ensureSource(ctx context.Context, srcURL, camDir, camKey, bgKey string, bgTransparent bool) *sourceResult {
 	sourceKey := "source"
 	isStep := isStepSource(srcURL)
 	if isStep {
-		if camKey == "" {
-			camKey = "iso"
-		}
-		sourceKey = "source_cam-" + camKey
+		sourceKey = stepSourceCacheKey(camKey, bgKey)
 	}
 
 	// 1. Check DB cache for source
@@ -212,7 +209,7 @@ func (p *WorkerPool) ensureSource(ctx context.Context, srcURL, camDir, camKey st
 
 	// 3. We're the first - fetch from remote (STEP: fetch raw + render)
 	if isStep {
-		renderStepSource(ctx, p, srcURL, camDir, entry)
+		renderStepSource(ctx, p, srcURL, camDir, bgTransparent, entry)
 	} else {
 		fetchSourceRemote(ctx, srcURL, entry)
 	}
@@ -300,7 +297,7 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 	// snapshot and continue through the normal image pipeline. Cam variants
 	// need the .step/.stp extension (detected before download).
 	if isStepData(bodyBytes) {
-		png, rerr := renderStepPNG(ctx, bodyBytes, "")
+		png, rerr := renderStepPNG(ctx, bodyBytes, "", false)
 		if rerr != nil {
 			entry.err = rerr
 			return
@@ -348,7 +345,7 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 // fetchAndResize gets the source image (from cache or remote), resizes, and encodes.
 // Respects the provided context for cancellation/timeout.
 func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, useAVIF, useWebP bool) *ResizeResult {
-	source := pool.ensureSource(ctx, srcURL, params.CamDir, params.CamKey)
+	source := pool.ensureSource(ctx, srcURL, params.CamDir, params.CamKey, params.BgKey, params.BgTransparent)
 	if source.err != nil {
 		return &ResizeResult{Err: source.err}
 	}
