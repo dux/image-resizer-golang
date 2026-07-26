@@ -106,19 +106,23 @@ Sources ending in `.step`/`.stp` get two extra capabilities:
 # Deterministic PNG render (no format negotiation)
 /r/w600.png?example.com/part.step
 
+# Backgrounds: transparent (default), or bg=white for opaque white
+/r/w600&bg=white.png?example.com/part.step
+
 # Convert to GLB (binary glTF, loads straight into three.js GLTFLoader)
 /r.glb?example.com/part.step        # alias: /r/to=glb?...
 ```
 
-Renders are produced by [f3d](https://f3d.app) (white background, anti-aliased,
-ambient occlusion, Z-up) and then behave like any image: AVIF/WebP/JPEG
-negotiation, resize variants, caching, spinner on slow jobs. GLB conversion
+Renders are produced by [f3d](https://f3d.app) (transparent background,
+anti-aliased, ambient occlusion, Z-up) and then behave like any image:
+AVIF/WebP/JPEG negotiation, resize variants, caching, spinner on slow jobs.
+Alpha survives PNG/WebP/AVIF output; JPEG flattens onto white. GLB conversion
 runs through OpenCascade `DRAWEXE` (see `scripts/step2glb`) and is served with
 `Access-Control-Allow-Origin: *` so three.js can fetch it cross-origin.
 
 Cache entries per STEP URL: raw bytes (`step`, downloaded once), `glb`, one
-source render per camera (`source_cam-iso`), plus the usual resize variants
-(`cam-iso_w_600_avif`).
+source render per camera/background (`source_cam-iso_bg-transparent`), plus the
+usual resize variants (`cam-iso_bg-transparent_w_600_avif`).
 
 Tools are optional and resolved from env (`F3D_BIN`, `STEP2GLB_BIN`); without
 them STEP requests fail gracefully (error SVG / HTTP 422).

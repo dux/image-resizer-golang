@@ -297,7 +297,7 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 	// snapshot and continue through the normal image pipeline. Cam variants
 	// need the .step/.stp extension (detected before download).
 	if isStepData(bodyBytes) {
-		png, rerr := renderStepPNG(ctx, bodyBytes, "", false)
+		png, rerr := renderStepPNG(ctx, bodyBytes, "", true)
 		if rerr != nil {
 			entry.err = rerr
 			return
@@ -368,8 +368,20 @@ func fetchAndResize(ctx context.Context, srcURL string, params *ResizeParams, us
 
 	format := source.format
 
+	// Premultiply around the resample: transparent pixels carry black RGB (f3d
+	// renders, most alpha PNGs), which bleeds into the edges of a straight
+	// non-premultiplied downscale and leaves a dark fringe.
+	if img.HasAlpha() {
+		if err := img.PremultiplyAlpha(); err != nil {
+			return &ResizeResult{Err: fmt.Errorf("premultiply-failed; %v", err)}
+		}
+	}
 	if err := resizeImage(img, params); err != nil {
 		return &ResizeResult{Err: fmt.Errorf("resize-failed; %v", err)}
+	}
+	// No-op unless premultiplied above; restores the original band format
+	if err := img.UnpremultiplyAlpha(); err != nil {
+		return &ResizeResult{Err: fmt.Errorf("unpremultiply-failed; %v", err)}
 	}
 
 	var (

@@ -10,10 +10,10 @@ package handlers
 //                                      (alias: /r/to=glb or f=glb)
 //
 // Extra instructions via params: cam=iso|front|back|top|bottom|left|right or
-// a raw "x,y,z" view direction; bg=transparent|none for a transparent PNG
-// background (default is white). Renders are cached per camera/background in
-// the source layer (key "source_cam-<cam>" or "source_cam-<cam>_bg-transparent"),
-// raw STEP bytes once under key "step".
+// a raw "x,y,z" view direction; bg=white for an opaque white background
+// (renders are transparent by default). Renders are cached per camera/background
+// in the source layer (key "source_cam-<cam>_bg-<bg>"), raw STEP bytes once
+// under key "step".
 //
 // External tools resolve from F3D_BIN / STEP2GLB_BIN env vars.
 
@@ -136,30 +136,36 @@ func parseCam(s string) (dir string, key string, err error) {
 	return s, s, nil
 }
 
-// parseBg validates a bg parameter for STEP renders. Empty or "white" keeps
-// the default opaque white background; "transparent" and "none" request an
-// alpha background via f3d --no-background.
+// parseBg validates a bg parameter for STEP renders. Empty, "transparent" and
+// "none" all request an alpha background via f3d --no-background (the default);
+// "white" opts into an opaque white background.
 func parseBg(s string) (transparent bool, key string, err error) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
-	case "", "white":
-		return false, "", nil
-	case "transparent", "none":
+	case "", "transparent", "none":
 		return true, "transparent", nil
+	case "white":
+		return false, "white", nil
 	default:
-		return false, "", fmt.Errorf("invalid bg '%s', use white (default), transparent, or none", s)
+		return false, "", fmt.Errorf("invalid bg '%s', use transparent (default), none, or white", s)
 	}
+}
+
+// stepCamBgToken builds the cam/bg token shared by both cache key layers,
+// e.g. "iso_bg-transparent".
+func stepCamBgToken(camKey, bgKey string) string {
+	if camKey == "" {
+		camKey = "iso"
+	}
+	if bgKey == "" {
+		bgKey = "transparent"
+	}
+	return camKey + "_bg-" + bgKey
 }
 
 // stepSourceCacheKey builds the per-render source cache key from cam/bg tokens.
 func stepSourceCacheKey(camKey, bgKey string) string {
-	if camKey == "" {
-		camKey = "iso"
-	}
-	if bgKey != "" {
-		camKey += "_bg-" + bgKey
-	}
-	return "source_cam-" + camKey
+	return "source_cam-" + stepCamBgToken(camKey, bgKey)
 }
 
 // runStepTool executes an external tool in a scratch dir with a timeout,

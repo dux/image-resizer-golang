@@ -72,11 +72,12 @@ func TestParseBg(t *testing.T) {
 		transparent bool
 		key         string
 	}{
-		{"", false, ""},
-		{"white", false, ""},
+		{"", true, "transparent"},
 		{"transparent", true, "transparent"},
 		{"none", true, "transparent"},
 		{"TRANSPARENT", true, "transparent"},
+		{"white", false, "white"},
+		{"WHITE", false, "white"},
 	} {
 		transparent, key, err := handlers.ParseBgForTest(c.in)
 		if err != nil || transparent != c.transparent || key != c.key {
@@ -94,10 +95,11 @@ func TestStepSourceCacheKey(t *testing.T) {
 	cases := []struct {
 		cam, bg, want string
 	}{
-		{"", "", "source_cam-iso"},
-		{"top", "", "source_cam-top"},
+		{"", "", "source_cam-iso_bg-transparent"},
+		{"top", "", "source_cam-top_bg-transparent"},
 		{"iso", "transparent", "source_cam-iso_bg-transparent"},
 		{"front", "transparent", "source_cam-front_bg-transparent"},
+		{"iso", "white", "source_cam-iso_bg-white"},
 	}
 	for _, c := range cases {
 		if got := handlers.StepSourceCacheKeyForTest(c.cam, c.bg); got != c.want {

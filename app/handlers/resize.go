@@ -157,8 +157,14 @@ func encodeWebP(img *vips.ImageRef, quality int) ([]byte, error) {
 	return data, err
 }
 
-// encodeJPEG exports the image as JPEG.
+// encodeJPEG exports the image as JPEG. Alpha is flattened onto white first -
+// JPEG has no alpha and vips would otherwise composite onto black.
 func encodeJPEG(img *vips.ImageRef, quality int) ([]byte, error) {
+	if img.HasAlpha() {
+		if err := img.Flatten(&vips.Color{R: 255, G: 255, B: 255}); err != nil {
+			return nil, err
+		}
+	}
 	params := vips.NewJpegExportParams()
 	params.Quality = quality
 	params.StripMetadata = true
@@ -336,15 +342,15 @@ func acceptsAVIF(r *http.Request) bool {
 
 // ResizeParams holds the resize parameters
 type ResizeParams struct {
-	Width    int
-	Height   int
-	CropMode bool
-	CacheKey string
-	Format   string // forced output format, "" = negotiate via Accept; "glb" = STEP to GLB
+	Width         int
+	Height        int
+	CropMode      bool
+	CacheKey      string
+	Format        string // forced output format, "" = negotiate via Accept; "glb" = STEP to GLB
 	CamDir        string // f3d camera direction vector (STEP renders)
 	CamKey        string // cam token for cache keys (STEP renders)
-	BgTransparent bool   // STEP render with transparent background (f3d --no-background)
-	BgKey         string // bg token for cache keys (STEP renders); "" = white default
+	BgTransparent bool   // STEP render with transparent background (f3d --no-background), the default
+	BgKey         string // bg token for cache keys (STEP renders): "transparent" or "white"
 }
 
 // parseResizeParams parses w=100x100 or c=100x100 parameters (also accepts width/height/crop)
@@ -377,14 +383,13 @@ func parseResizeParams(r *http.Request) (*ResizeParams, error) {
 		params.CamDir = dir
 		params.CamKey = key
 	}
-	if bg := r.URL.Query().Get("bg"); bg != "" {
-		transparent, key, err := parseBg(bg)
-		if err != nil {
-			return nil, err
-		}
-		params.BgTransparent = transparent
-		params.BgKey = key
+	// Always resolved so the default (transparent) lands in the cache key too
+	transparent, bgKey, err := parseBg(r.URL.Query().Get("bg"))
+	if err != nil {
+		return nil, err
 	}
+	params.BgTransparent = transparent
+	params.BgKey = bgKey
 
 	cropStr := r.URL.Query().Get("c")
 	if cropStr == "" {
@@ -760,14 +765,7 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	cacheKey := params.CacheKey + "_" + formatSuffix
 	if isStepSource(srcURL) {
-		camKey := params.CamKey
-		if camKey == "" {
-			camKey = "iso"
-		}
-		if params.BgKey != "" {
-			camKey += "_bg-" + params.BgKey
-		}
-		cacheKey = "cam-" + camKey + "_" + cacheKey
+		cacheKey = "cam-" + stepCamBgToken(params.CamKey, params.BgKey) + "_" + cacheKey
 	}
 
 	cachedData, contentType, responseFormat, err := database.GetCachedImage(srcURL, cacheKey)
