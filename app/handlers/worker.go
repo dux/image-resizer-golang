@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -69,8 +72,13 @@ type WorkerPool struct {
 }
 
 // WorkerWaitTimeout is how long the HTTP handler waits for a worker result
-// before returning a spinner SVG placeholder. Default 60 seconds.
-var WorkerWaitTimeout = 60 * time.Second
+// before returning a spinner SVG placeholder. Worker keeps going in the
+// background so the next request can hit cache.
+var WorkerWaitTimeout = 10 * time.Second
+
+// workerJobTimeout is longer than WorkerWaitTimeout so a scheduled resize is
+// not marked as a hard error while the client is still retrying the spinner.
+const workerJobTimeout = 90 * time.Second
 
 // pool is the package-level worker pool instance
 var pool *WorkerPool
@@ -137,7 +145,7 @@ func (p *WorkerPool) worker(id int) {
 
 // processTask fetches, resizes (or converts), caches, and notifies waiters
 func (p *WorkerPool) processTask(task *workerTask) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), workerJobTimeout)
 	var result *ResizeResult
 	if task.job.Params.Format == "glb" {
 		result = fetchAndConvertGLB(ctx, task.job.SrcURL)
@@ -238,6 +246,72 @@ func (p *WorkerPool) ensureSource(ctx context.Context, srcURL, camDir, camKey, b
 	return entry
 }
 
+// isSVGSource reports whether the fetched object is an SVG file (passthrough,
+// no resize). Raster magic bytes win over URL and Content-Type so a Commons
+// thumb like Flag.svg.png is treated as an image and resized.
+func isSVGSource(contentType, srcURL string, body []byte) bool {
+	if isRasterMagic(body) {
+		return false
+	}
+	if isSVGBytes(body) {
+		return true
+	}
+	ct := strings.ToLower(contentType)
+	if strings.Contains(ct, "svg") && !strings.Contains(ct, "png") && !strings.Contains(ct, "jpeg") && !strings.Contains(ct, "jpg") {
+		return true
+	}
+	return urlPathIsSVG(srcURL)
+}
+
+func isRasterMagic(b []byte) bool {
+	if len(b) < 12 {
+		return false
+	}
+	if b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF {
+		return true
+	}
+	if b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G' {
+		return true
+	}
+	if string(b[0:6]) == "GIF87a" || string(b[0:6]) == "GIF89a" {
+		return true
+	}
+	if string(b[0:4]) == "RIFF" && string(b[8:12]) == "WEBP" {
+		return true
+	}
+	if b[0] == 'B' && b[1] == 'M' {
+		return true
+	}
+	if string(b[4:8]) == "ftyp" {
+		return true
+	}
+	return false
+}
+
+func isSVGBytes(b []byte) bool {
+	s := strings.TrimSpace(string(bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})))
+	sl := strings.ToLower(s)
+	if strings.HasPrefix(sl, "<svg") {
+		return true
+	}
+	return strings.HasPrefix(sl, "<?xml") && strings.Contains(sl, "<svg")
+}
+
+func urlPathIsSVG(srcURL string) bool {
+	path := srcURL
+	if u, err := url.Parse(srcURL); err == nil && u.Path != "" {
+		path = u.Path
+	} else if i := strings.IndexAny(srcURL, "?#"); i >= 0 {
+		path = srcURL[:i]
+	}
+	return strings.HasSuffix(strings.ToLower(path), ".svg")
+}
+
+// IsSVGSourceForTest exposes isSVGSource for tests.
+func IsSVGSourceForTest(contentType, srcURL string, body []byte) bool {
+	return isSVGSource(contentType, srcURL, body)
+}
+
 // downloadBytes fetches a remote URL body with browser-like headers.
 // Returns the body bytes and the response Content-Type.
 func downloadBytes(ctx context.Context, srcURL string) ([]byte, string, error) {
@@ -285,8 +359,10 @@ func fetchSourceRemote(ctx context.Context, srcURL string, entry *sourceResult) 
 		return
 	}
 
-	// SVG passthrough (no decode)
-	if strings.Contains(contentType, "svg") || strings.HasSuffix(strings.ToLower(srcURL), ".svg") {
+	// SVG files are never resized. Raster bytes always go through the
+	// image pipeline — host (wikipedia/etc) and ".svg.png" thumbs do not
+	// count as SVG.
+	if isSVGSource(contentType, srcURL, bodyBytes) {
 		entry.isSVG = true
 		entry.data = bodyBytes
 		entry.format = "svg"
@@ -519,8 +595,35 @@ func serveSpinnerSVG(w http.ResponseWriter, params *ResizeParams) {
 	w.Header().Set("Retry-After", "10")
 	w.Header().Set("Content-Length", strconv.Itoa(len(svgData)))
 	w.Header().Set("X-Cache", "QUEUED")
-	w.Header().Set("X-Info", "processing; worker-timeout; retry-after-10s")
+	w.Header().Set("X-Info", "processing; queued; retry-after-10s")
 	w.Write(svgData)
+}
+
+// isRetryableResizeErr is true when work is still running or should be retried
+// (timeout / cancelled / 429). Those must show the spinner, not the error icon.
+func isRetryableResizeErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "timeout"),
+		strings.Contains(s, "deadline"),
+		strings.Contains(s, "canceled"),
+		strings.Contains(s, "cancelled"),
+		strings.Contains(s, "status=429"):
+		return true
+	default:
+		return false
+	}
+}
+
+// IsRetryableResizeErrForTest exposes isRetryableResizeErr for tests.
+func IsRetryableResizeErrForTest(err error) bool {
+	return isRetryableResizeErr(err)
 }
 
 // generateErrorSVG creates a light red bordered placeholder SVG with error icon

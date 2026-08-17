@@ -797,6 +797,11 @@ func ResizeHandler(w http.ResponseWriter, r *http.Request) {
 	case <-entry.done:
 		result := entry.result
 		if result.Err != nil {
+			if isRetryableResizeErr(result.Err) {
+				log.Printf("Resize still pending for %s: %v", srcURL, result.Err)
+				serveSpinnerSVG(w, params)
+				return
+			}
 			svgData := generateErrorSVG(params.Width, params.Height)
 			w.Header().Set("Content-Type", "image/svg+xml")
 			w.Header().Set("Cache-Control", "no-cache, max-age=60")

@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -39,6 +40,8 @@ func imageServer() *httptest.Server {
 		"/test.svg": {[]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150">
 			<rect width="200" height="150" fill="red"/>
 		</svg>`), "image/svg+xml"},
+		// Commons-style raster thumb of an SVG — must be resized, not passthrough.
+		"/Flag.svg.png": {createTestPNG(200, 150), "image/png"},
 	}
 
 	mux := http.NewServeMux()
@@ -195,6 +198,15 @@ func TestResizeNewFormat(t *testing.T) {
 			accept:          "image/avif,image/webp,image/*",
 			expectedStatus:  http.StatusOK,
 			expectedType:    "image/svg+xml",
+			expectImmutable: true,
+		},
+		{
+			name:            "svg.png raster thumb is resized",
+			path:            "/r/w100",
+			query:           ts.URL + "/Flag.svg.png",
+			accept:          "image/*",
+			expectedStatus:  http.StatusOK,
+			expectedType:    "image/png",
 			expectImmutable: true,
 		},
 		{
@@ -412,6 +424,12 @@ func TestErrorSVGHeaders(t *testing.T) {
 			body := rec.Body.String()
 			if !strings.Contains(body, "<svg") {
 				t.Error("response should be SVG")
+			}
+			if !strings.Contains(body, "#fff8f8") {
+				t.Error("hard error should use the error icon, not the spinner")
+			}
+			if strings.Contains(body, "animateTransform") {
+				t.Error("hard error should not be the queued spinner")
 			}
 		})
 	}
@@ -1317,6 +1335,54 @@ func TestRequestCoalescing(t *testing.T) {
 	mu.Unlock()
 	if count != 1 {
 		t.Errorf("source fetched %d times, expected 1 (coalescing failed)", count)
+	}
+}
+
+func TestIsRetryableResizeErr(t *testing.T) {
+	if !handlers.IsRetryableResizeErrForTest(context.DeadlineExceeded) {
+		t.Error("deadline should be retryable")
+	}
+	if !handlers.IsRetryableResizeErrForTest(fmt.Errorf("source-wait-timeout; context deadline exceeded")) {
+		t.Error("source-wait-timeout should be retryable")
+	}
+	if !handlers.IsRetryableResizeErrForTest(fmt.Errorf("fetch-failed; status=429")) {
+		t.Error("429 should be retryable")
+	}
+	if handlers.IsRetryableResizeErrForTest(fmt.Errorf("fetch-failed; status=404")) {
+		t.Error("404 should not be retryable")
+	}
+	if handlers.IsRetryableResizeErrForTest(fmt.Errorf("decode-failed; bad data")) {
+		t.Error("decode-failed should not be retryable")
+	}
+}
+
+func TestIsSVGSource(t *testing.T) {
+	png := createTestPNG(8, 8)
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>`)
+	xmlSVG := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>`)
+
+	tests := []struct {
+		name        string
+		contentType string
+		srcURL      string
+		body        []byte
+		want        bool
+	}{
+		{"svg file", "image/svg+xml", "https://example.com/flag.svg", svg, true},
+		{"svg with query", "image/svg+xml", "https://example.com/flag.svg?utm_source=x", svg, true},
+		{"commons svg.png is raster", "image/png", "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Flag.svg/1280px-Flag.svg.png", png, false},
+		{"raster wins over svg content-type", "image/svg+xml", "https://example.com/flag.svg", png, false},
+		{"raster wins over svg url", "image/png", "https://example.com/pic.svg", png, false},
+		{"xml svg", "image/svg+xml", "https://example.com/x.svg", xmlSVG, true},
+		{"jpeg", "image/jpeg", "https://upload.wikimedia.org/wikipedia/commons/a/ab/Photo.jpg", createTestJPEG(8, 8), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := handlers.IsSVGSourceForTest(tt.contentType, tt.srcURL, tt.body)
+			if got != tt.want {
+				t.Errorf("isSVGSource() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
