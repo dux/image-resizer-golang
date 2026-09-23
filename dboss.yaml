@@ -16,3 +16,8 @@ procfile:
 
 env:
   MAX_DB_SIZE: 500
+
+# The SQLite cache lives in ./tmp and its main db files can go untouched for weeks
+# while the WAL takes the writes, so dboss's age-based tmp sweep would delete live
+# databases.
+tmp_clean: false
