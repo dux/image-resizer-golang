@@ -386,6 +386,15 @@ lux-deploy up
 The box needs the system libraries from the Quick Start and STEP sections (`libvips-dev`,
 `occt-draw`, f3d, headless GL); Go comes from `mise.toml`.
 
+Debian 13 (trixie) has three traps:
+
+* libheif ships its encoders as plugins, so AVIF output needs `libheif-plugin-aomenc`.
+  Without it every resize answers the error SVG.
+* The `occt-draw` 7.8.1 package has no executable, only a dangling `/usr/bin/occt-draw`.
+  Unpack Debian 12's 7.6.3 packages (`dpkg-deb -x`) and put a `DRAWEXE` wrapper on `PATH`;
+  `scripts/step2glb` looks for `DRAWEXE` first.
+* Debian's f3d is 3.1, which lacks `--force-reader`; use the 3.5 release tarball.
+
 ## Dependencies
 
 System:
