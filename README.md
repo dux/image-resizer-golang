@@ -351,7 +351,6 @@ make test-resize    # Verbose resize tests
 make clean          # Remove bin/
 make nginx          # Print nginx reverse proxy config
 make systemd        # Print systemd service unit
-make re-deploy      # Git pull + build + restart systemd
 ```
 
 ## Docker
@@ -370,6 +369,22 @@ docker-compose --profile dev up -d
 The image is Debian-based and bundles the full STEP toolchain (occt-draw,
 f3d, OSMesa for headless GL). The f3d release .deb is x86_64-only, so build
 with `--platform linux/amd64` on ARM hosts (Apple Silicon).
+
+## Deploy
+
+Production runs natively under [dboss](https://github.com/dux/dboss), deployed with
+[lux-deploy](https://github.com/dux/lux-deploy):
+
+```bash
+lux-deploy up
+```
+
+* `dboss.yaml` - the process, its hostnames and env; `dboss s` runs the same file locally.
+* `config/deploy/remote_before.sh` - builds `bin/server` on the box against its libvips.
+* The SQLite cache lives in `tmp/`, which lux-deploy links to a shared dir that survives releases.
+
+The box needs the system libraries from the Quick Start and STEP sections (`libvips-dev`,
+`occt-draw`, f3d, headless GL); Go comes from `mise.toml`.
 
 ## Dependencies
 

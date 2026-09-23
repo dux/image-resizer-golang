@@ -1,0 +1,18 @@
+# One file, both sessions. `dboss s` in this folder runs the dev server; the same
+# file is the app config lux-deploy ships to the box. A _dev key replaces its base
+# key in a dev session and is dropped in every other one.
+#
+# The binary is built on the box by config/deploy/remote_before.sh - govips links
+# libvips through cgo, so there is no cross-build.
+
+procfile:
+  web:
+    command: exec ./bin/server
+    command_dev: exec go run ./app
+    hosts: [img.sohospot.com, resizer.sohotasks.com]
+    hosts_dev: ['.lvh.me']
+    # no dedicated health route; the favicon is served from memory, no cache or fetch
+    health: /favicon.ico
+
+env:
+  MAX_DB_SIZE: 500

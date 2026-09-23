@@ -58,10 +58,4 @@ test-image:
 clean:
 	rm -rf bin/
 
-re-deploy:
-	git stash
-	git pull
-	make build
-	sysd restart
-
 .PHONY: default build passenger run test test-resize test-image clean nginx systemd

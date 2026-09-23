@@ -60,3 +60,6 @@ bin/
 # Cache directories
 cache/
 .cache/
+
+# dboss dev session state
+.dboss/
